@@ -8,6 +8,7 @@ import requests
 import yfinance as yf
 
 app = Flask(__name__)
+application = app  # Render కోసం అవసరమైన వేరియబుల్
 
 # Telegram configuration from environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -163,4 +164,3 @@ def scan_top():
 
 if __name__ == "__main__":
   app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
