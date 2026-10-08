@@ -30,10 +30,10 @@ STOCK_UNIVERSE = [
     "TATAMOTORS", "BAJFINANCE", "ITC", "LT", "AXISBANK", "KOTAKBANK"
 ]
 
-# ప్రతి టైప్ కి విడివిడిగా ట్రాకింగ్
-SENT_ALERTS = {"AI": set(), "QUANT": set(), "HYBRID": set()}
-ACTIVE_TRADES = {"AI": {}, "QUANT": {}, "HYBRID": {}}
-AUDIT_LOGS = {"AI": [], "QUANT": [], "HYBRID": []}
+# 4 విభిన్న కేటగిరీల కోసం ట్రాకింగ్ స్టేట్
+SENT_ALERTS = {"AI": set(), "QUANT": set(), "HYBRID": set(), "PRICE_ACTION": set()}
+ACTIVE_TRADES = {"AI": {}, "QUANT": {}, "HYBRID": {}, "PRICE_ACTION": {}}
+AUDIT_LOGS = {"AI": [], "QUANT": [], "HYBRID": [], "PRICE_ACTION": []}
 
 AUDIT_SENT_TODAY = False
 LATEST_AUTO_SCAN_RESULTS = []
@@ -57,8 +57,108 @@ def check_market_session():
     if cur_mins < 555:
         return False, "మార్కెట్ ఇంకా ప్రారంభం కాలేదు (09:15 AM వరకు వేచి ఉండండి)"
     if cur_mins > 930:
-        return False, "నేటి మార్కెట్ సమయం ముగిసింది (03:30 PM)"
+        return False, "మార్కెట్ సమయం ముగిసింది (03:30 PM)"
     return True, "MARKET_LIVE"
+
+class MasterPriceActionScanner:
+    def __init__(self, df: pd.DataFrame, range_lookback: int = 20):
+        self.df = df.copy()
+        self.range_lookback = range_lookback
+        self._prepare_indicators()
+
+    def _prepare_indicators(self):
+        typical_price = (self.df['high'] + self.df['low'] + self.df['close']) / 3
+        self.df['VWAP'] = (typical_price * self.df['volume']).cumsum() / (self.df['volume'].cumsum() + 1e-9)
+        self.df['SMA20'] = self.df['close'].rolling(window=20).mean()
+
+        self.df['Recent_High'] = self.df['high'].shift(2).rolling(window=5).max()
+        self.df['Recent_Low'] = self.df['low'].shift(2).rolling(window=5).min()
+
+        self.df['Range_High'] = self.df['high'].shift(2).rolling(window=self.range_lookback).max()
+        self.df['Range_Low'] = self.df['low'].shift(2).rolling(window=self.range_lookback).min()
+
+        self.df['Bullish_FVG'] = (self.df['low'] > self.df['high'].shift(2)) & (self.df['close'].shift(1) > self.df['open'].shift(1))
+        self.df['Bearish_FVG'] = (self.df['high'] < self.df['low'].shift(2)) & (self.df['close'].shift(1) < self.df['open'].shift(1))
+
+        self.df['Bullish_OB_Low'] = np.nan
+        self.df['Bullish_OB_High'] = np.nan
+        self.df['Bearish_OB_Low'] = np.nan
+        self.df['Bearish_OB_High'] = np.nan
+
+        for i in range(2, len(self.df)):
+            if (self.df['close'].iloc[i - 1] < self.df['open'].iloc[i - 1] and
+                self.df['close'].iloc[i] > self.df['open'].iloc[i] and
+                self.df['close'].iloc[i] > self.df['high'].iloc[i - 1]):
+                self.df.loc[self.df.index[i], 'Bullish_OB_Low'] = self.df['low'].iloc[i - 1]
+                self.df.loc[self.df.index[i], 'Bullish_OB_High'] = self.df['high'].iloc[i - 1]
+
+            if (self.df['close'].iloc[i - 1] > self.df['open'].iloc[i - 1] and
+                self.df['close'].iloc[i] < self.df['open'].iloc[i] and
+                self.df['close'].iloc[i] < self.df['low'].iloc[i - 1]):
+                self.df.loc[self.df.index[i], 'Bearish_OB_Low'] = self.df['low'].iloc[i - 1]
+                self.df.loc[self.df.index[i], 'Bearish_OB_High'] = self.df['high'].iloc[i - 1]
+
+        self.df['Bullish_OB_Low'] = self.df['Bullish_OB_Low'].ffill()
+        self.df['Bullish_OB_High'] = self.df['Bullish_OB_High'].ffill()
+        self.df['Bearish_OB_Low'] = self.df['Bearish_OB_Low'].ffill()
+        self.df['Bearish_OB_High'] = self.df['Bearish_OB_High'].ffill()
+
+        self.df['Extreme_High'] = self.df['high'].shift(3).rolling(window=20).max()
+        self.df['Extreme_Low'] = self.df['low'].shift(3).rolling(window=20).min()
+
+    def get_latest_signal(self):
+        if len(self.df) < max(25, self.range_lookback + 2):
+            return None
+        i = len(self.df) - 1
+        curr = self.df.iloc[i]
+        prev = self.df.iloc[i - 1]
+        candle_2 = self.df.iloc[i - 2]
+
+        # 1. Breakout & Retest
+        level_high = curr['Recent_High']
+        level_low = curr['Recent_Low']
+        if (prev['close'] >= level_high and curr['low'] <= level_high * 1.002 and curr['close'] > level_high and curr['close'] > curr['open']):
+            if curr['close'] > curr['VWAP'] and curr['close'] > curr['SMA20']:
+                entry = round(curr['close'], 2)
+                sl = round(min(curr['low'], level_high) - 0.20, 2)
+                risk = round(entry - sl, 2)
+                if risk > 0:
+                    return {'model': 'Breakout + Retest', 'setup': 'Support Retest above VWAP', 'signal': 'BUY', 'entry': entry, 'sl': sl, 'target': round(entry + (risk * 2), 2), 'risk': risk, 'rr': '1:2.0'}
+
+        # 2. Wyckoff Accumulation Spring
+        r_high = curr['Range_High']
+        r_low = curr['Range_Low']
+        fakeout_down = prev['low'] < r_low and prev['close'] >= r_low
+        bullish_markup = curr['close'] > r_high and curr['close'] > curr['open']
+        if (fakeout_down or prev['close'] > r_high) and bullish_markup:
+            entry = round(curr['close'], 2)
+            sl = round(r_low, 2)
+            risk = round(entry - sl, 2)
+            if risk > 0:
+                return {'model': 'Wyckoff Theory', 'setup': 'Accumulation Spring -> Markup Phase', 'signal': 'BUY', 'entry': entry, 'sl': sl, 'target': round(entry + (risk * 2), 2), 'risk': risk, 'rr': '1:2.0'}
+
+        # 3. SMC Liquidity Sweep & FVG
+        swept_low = prev['low'] < candle_2['low'] and prev['close'] >= candle_2['low']
+        if swept_low and curr['close'] > curr['open']:
+            entry = round(curr['close'], 2)
+            sl = round(min(curr['low'], prev['low']) - 0.20, 2)
+            risk = round(entry - sl, 2)
+            if risk > 0:
+                return {'model': 'SMC Liquidity & FVG', 'setup': 'Low Sweep + Bullish FVG Retest', 'signal': 'BUY', 'entry': entry, 'sl': sl, 'target': round(entry + (risk * 2), 2), 'risk': risk, 'rr': '1:2.0'}
+
+        # 4. Institutional Order Block
+        ob_high = curr['Bullish_OB_High']
+        ob_low = curr['Bullish_OB_Low']
+        tested_bullish_ob = (curr['low'] <= ob_high and curr['close'] >= ob_low) if pd.notna(ob_high) else False
+        if tested_bullish_ob and curr['close'] > curr['open']:
+            entry = round(curr['close'], 2)
+            sl = round(min(curr['low'], prev['low']) - 0.20, 2)
+            risk = round(entry - sl, 2)
+            target = round(max(curr['Extreme_High'], entry + (risk * 2.0)), 2)
+            if risk > 0:
+                return {'model': 'Institutional SMC', 'setup': 'Bullish Order Block Mitigated', 'signal': 'BUY', 'entry': entry, 'sl': sl, 'target': target, 'risk': risk, 'rr': '1:2.0'}
+
+        return None
 
 def evaluate_stock_full(symbol):
     clean_sym = symbol.replace('.NS', '').upper()
@@ -71,7 +171,7 @@ def evaluate_stock_full(symbol):
         df.columns = [c.lower() for c in df.columns]
         curr_p = round(float(df['close'].iloc[-1]), 2)
 
-        # Support & Resistance Levels (Pivot Points)
+        # Pivots (S1, S2, R1, R2)
         high_val = float(df['high'].max())
         low_val = float(df['low'].min())
         pivot = (high_val + low_val + curr_p) / 3.0
@@ -107,20 +207,26 @@ def evaluate_stock_full(symbol):
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         atr_14 = float((tr.rolling(14).mean().iloc[-1] / curr_p) * 100.0)
 
-        # Fast Indicators (EMA 5 & 13)
+        # Fast Indicators
         ema_5 = float(df['close'].ewm(span=5, adjust=False).mean().iloc[-1])
         ema_13 = float(df['close'].ewm(span=13, adjust=False).mean().iloc[-1])
 
+        # 1. AI Score (Threshold 60%)
         quant_score = 50
         ai_buy = False
         if ai_model is not None:
             features = np.array([[fvg_gap_pct, dist_from_vwap, vol_ratio, rsi_14, atr_14]])
             win_prob = ai_model.predict_proba(features)[0][1]
             quant_score = int(win_prob * 100)
-            if quant_score >= 65 and curr_p >= curr_vwap:
+            if quant_score >= 60 and curr_p >= curr_vwap:
                 ai_buy = True
 
+        # 2. Indicators Pass
         indicators_pass = (ema_5 > ema_13) and (curr_p > curr_vwap) and (45 <= rsi_14 <= 65) and (curr_vol > avg_vol)
+
+        # 3. Master Price Action Scan (Type 4)
+        pa_scanner = MasterPriceActionScanner(df)
+        pa_signal = pa_scanner.get_latest_signal()
 
         return {
             "stock": clean_sym,
@@ -130,9 +236,11 @@ def evaluate_stock_full(symbol):
             "quant_score": quant_score,
             "ai_buy": ai_buy,
             "indicators_pass": indicators_pass,
+            "pa_signal": pa_signal,
             "sl": round(curr_p * 0.993, 2),
             "target": round(curr_p * 1.01, 2),
-            "s1": s1, "s2": s2, "r1": r1, "r2": r2
+            "s1": s1, "s2": s2,
+            "r1": r1, "r2": r2
         }
     except:
         return None
@@ -145,55 +253,41 @@ def background_auto_scanner():
         try:
             ist_now = datetime.now(ist)
 
-            # ప్రతిరోజూ ఉదయం 9:15 కి డేటా క్లియర్
+            # Daily Reset 09:15 AM
             if ist_now.hour == 9 and ist_now.minute < 15:
-                SENT_ALERTS = {"AI": set(), "QUANT": set(), "HYBRID": set()}
-                ACTIVE_TRADES = {"AI": {}, "QUANT": {}, "HYBRID": {}}
-                AUDIT_LOGS = {"AI": [], "QUANT": [], "HYBRID": []}
+                SENT_ALERTS = {"AI": set(), "QUANT": set(), "HYBRID": set(), "PRICE_ACTION": set()}
+                ACTIVE_TRADES = {"AI": {}, "QUANT": {}, "HYBRID": {}, "PRICE_ACTION": {}}
+                AUDIT_LOGS = {"AI": [], "QUANT": [], "HYBRID": [], "PRICE_ACTION": []}
                 AUDIT_SENT_TODAY = False
 
-            # సాయంత్రం 03:30 PM తర్వాత 3 ప్రత్యేక ఆడిట్ నివేదికలు
+            # After 03:30 PM: 4 Separate Audit Reports
             if ist_now.hour >= 15 and ist_now.minute >= 30 and not AUDIT_SENT_TODAY:
-                for strat in ["AI", "QUANT", "HYBRID"]:
+                for strat in ["AI", "QUANT", "HYBRID", "PRICE_ACTION"]:
                     for sym, pos in list(ACTIVE_TRADES[strat].items()):
                         AUDIT_LOGS[strat].append(f"🟢 {sym}: CLOSED AT 03:30 PM | P&L: ₹0.00 (Exit: ₹{pos['entry']})")
                     ACTIVE_TRADES[strat].clear()
 
-                # రిపోర్ట్ 1: Pure AI
-                pnl_ai = sum([float(l.split('P&L: ₹')[1].split(' ')[0]) for l in AUDIT_LOGS["AI"] if 'P&L: ₹' in l])
-                msg_ai = (
-                    f"📊 *[AUDIT 1: PURE AI MODEL REPORT]*\n"
-                    f"💰 *NET PROFIT: ₹{round(pnl_ai, 2)}*\n"
-                    f"────────────────────\n"
-                    f"⏱️ *Audit Logs:*\n" + ("\n".join(AUDIT_LOGS["AI"][-10:]) if AUDIT_LOGS["AI"] else "No Trades Today")
-                )
-                send_telegram_msg(msg_ai)
-                time.sleep(3)
+                titles = {
+                    "AI": "📊 *[AUDIT 1: PURE AI MODEL REPORT]*",
+                    "QUANT": "📊 *[AUDIT 2: QUANT INDICATORS REPORT]*",
+                    "HYBRID": "📊 *[AUDIT 3: HYBRID (AI + QUANT) REPORT]*",
+                    "PRICE_ACTION": "📊 *[AUDIT 4: INSTITUTIONAL PRICE ACTION REPORT]*"
+                }
 
-                # రిపోర్ట్ 2: Quant Indicators
-                pnl_quant = sum([float(l.split('P&L: ₹')[1].split(' ')[0]) for l in AUDIT_LOGS["QUANT"] if 'P&L: ₹' in l])
-                msg_quant = (
-                    f"📊 *[AUDIT 2: QUANT INDICATORS REPORT]*\n"
-                    f"💰 *NET PROFIT: ₹{round(pnl_quant, 2)}*\n"
-                    f"────────────────────\n"
-                    f"⏱️ *Audit Logs:*\n" + ("\n".join(AUDIT_LOGS["QUANT"][-10:]) if AUDIT_LOGS["QUANT"] else "No Trades Today")
-                )
-                send_telegram_msg(msg_quant)
-                time.sleep(3)
-
-                # రిపోర్ట్ 3: Hybrid (AI + Indicators)
-                pnl_hyb = sum([float(l.split('P&L: ₹')[1].split(' ')[0]) for l in AUDIT_LOGS["HYBRID"] if 'P&L: ₹' in l])
-                msg_hyb = (
-                    f"📊 *[AUDIT 3: HYBRID (AI + QUANT) REPORT]*\n"
-                    f"💰 *NET PROFIT: ₹{round(pnl_hyb, 2)}*\n"
-                    f"────────────────────\n"
-                    f"⏱️ *Audit Logs:*\n" + ("\n".join(AUDIT_LOGS["HYBRID"][-10:]) if AUDIT_LOGS["HYBRID"] else "No Trades Today")
-                )
-                send_telegram_msg(msg_hyb)
+                for strat in ["AI", "QUANT", "HYBRID", "PRICE_ACTION"]:
+                    pnl = sum([float(l.split('P&L: ₹')[1].split(' ')[0]) for l in AUDIT_LOGS[strat] if 'P&L: ₹' in l])
+                    msg = (
+                        f"{titles[strat]}\n"
+                        f"💰 *NET PROFIT: ₹{round(pnl, 2)}*\n"
+                        f"────────────────────\n"
+                        f"⏱️ *Audit Logs:*\n" + ("\n".join(AUDIT_LOGS[strat][-10:]) if AUDIT_LOGS[strat] else "No Trades Today")
+                    )
+                    send_telegram_msg(msg)
+                    time.sleep(2)
 
                 AUDIT_SENT_TODAY = True
 
-            # లైవ్ మార్కెట్ స్కాన్
+            # Live Scan
             is_live, _ = check_market_session()
             if is_live:
                 live_candidates = []
@@ -204,7 +298,7 @@ def background_auto_scanner():
                     
                     price = res['price']
 
-                    # 1. TYPE 1: Pure AI Alert
+                    # 1. TYPE 1: AI ONLY
                     if res['ai_buy'] and sym not in SENT_ALERTS["AI"]:
                         SENT_ALERTS["AI"].add(sym)
                         ACTIVE_TRADES["AI"][sym] = {"entry": price, "sl": res['sl'], "target": res['target']}
@@ -220,12 +314,12 @@ def background_auto_scanner():
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
 
-                    # 2. TYPE 2: Quant Indicators Alert
+                    # 2. TYPE 2: QUANT INDICATORS
                     if res['indicators_pass'] and sym not in SENT_ALERTS["QUANT"]:
                         SENT_ALERTS["QUANT"].add(sym)
                         ACTIVE_TRADES["QUANT"][sym] = {"entry": price, "sl": res['sl'], "target": res['target']}
                         send_telegram_msg(
-                            f"⚡ *[TYPE 2: QUANT INDICATORS ALERT]*\n"
+                            f"⚡ *[TYPE 2: QUANT INDICATORS BUY ALERT]*\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n"
                             f"📌 Stock: `{sym}`\n"
                             f"📊 RSI: {res['rsi']} | VWAP: ₹{res['vwap']}\n"
@@ -236,7 +330,7 @@ def background_auto_scanner():
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
 
-                    # 3. TYPE 3: Hybrid Confluence Alert
+                    # 3. TYPE 3: HYBRID CONFLUENCE
                     if res['ai_buy'] and res['indicators_pass'] and sym not in SENT_ALERTS["HYBRID"]:
                         SENT_ALERTS["HYBRID"].add(sym)
                         ACTIVE_TRADES["HYBRID"][sym] = {"entry": price, "sl": res['sl'], "target": res['target']}
@@ -253,8 +347,26 @@ def background_auto_scanner():
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
 
-                    # ఎగ్జిట్ ట్రాకింగ్ (Target & SL చెకింగ్)
-                    for strat in ["AI", "QUANT", "HYBRID"]:
+                    # 4. TYPE 4: INSTITUTIONAL PRICE ACTION
+                    if res['pa_signal'] and sym not in SENT_ALERTS["PRICE_ACTION"]:
+                        pa = res['pa_signal']
+                        SENT_ALERTS["PRICE_ACTION"].add(sym)
+                        ACTIVE_TRADES["PRICE_ACTION"][sym] = {"entry": pa['entry'], "sl": pa['sl'], "target": pa['target']}
+                        send_telegram_msg(
+                            f"🏛️ *[TYPE 4: INSTITUTIONAL PRICE ACTION]*\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📌 Stock: `{sym}`\n"
+                            f"⚡ Strategy: *{pa['model']}*\n"
+                            f"🎯 Setup: _{pa['setup']}_\n"
+                            f"📥 Signal: *{pa['signal']} @ ₹{pa['entry']}*\n"
+                            f"🛑 SL: ₹{pa['sl']} | 🎯 Target: ₹{pa['target']}\n"
+                            f"⚖️ Risk: ₹{pa['risk']} | R:R: {pa['rr']}\n"
+                            f"🛡️ S1: ₹{res['s1']} | 🚧 R1: ₹{res['r1']}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━"
+                        )
+
+                    # Target / SL Checker
+                    for strat in ["AI", "QUANT", "HYBRID", "PRICE_ACTION"]:
                         if sym in ACTIVE_TRADES[strat]:
                             trade = ACTIVE_TRADES[strat][sym]
                             if price >= trade["target"]:
@@ -280,7 +392,7 @@ def scan_top():
     ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     today_str = str(ist_now.date())
     if not LATEST_AUTO_SCAN_RESULTS:
-        return jsonify([{"date": today_str, "pred": "Scanning", "actual": "Waiting for Confluence...", "accuracy": "Active"}])
+        return jsonify([{"date": today_str, "pred": "Scanning NSE Universe", "actual": "Waiting for Setup...", "accuracy": "Active"}])
     best = LATEST_AUTO_SCAN_RESULTS[0]
     return jsonify([{
         "date": today_str,
@@ -291,15 +403,21 @@ def scan_top():
 
 @application.route('/test_telegram', methods=['GET'])
 def test_telegram():
-    status = send_telegram_msg("🔔 Render Cloud: Bot connection verified!")
+    status = send_telegram_msg("🔔 Render Cloud: 4-in-1 Engine Online!")
     return jsonify({"status": "SUCCESS" if status else "FAILED"})
 
 @application.route('/')
 def home():
     return jsonify({
         "status": "ONLINE",
-        "system": "3-Category Stock AI Engine",
-        "features": ["3 Separate Audits", "S1/S2 Supports", "R1/R2 Resistances", "Fast EMA 5/13"]
+        "system": "4-Tier Institutional Stock AI Engine",
+        "strategies": [
+            "Type 1: Pure AI Model (60% Threshold)",
+            "Type 2: Quant Indicators (RSI/VWAP/EMA 5-13/Vol)",
+            "Type 3: Dual Confluence (AI + Indicators)",
+            "Type 4: Master Price Action (Wyckoff/SMC/OB/FVG)"
+        ],
+        "audit_reports": "4 Individual Logs after 03:30 PM"
     })
 
 if __name__ == '__main__':
