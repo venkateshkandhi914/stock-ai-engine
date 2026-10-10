@@ -64,8 +64,11 @@ def send_telegram_msg(msg_text):
     except:
         return False
 
-# 1. Binance Market-Wide Scanner: టాప్ 15 మూమెంటమ్ ఆల్ట్‌కాయిన్స్ ఫిల్టర్
+# 1. Binance Market-Wide Scanner: టాప్ మూమెంటమ్ కాయిన్స్ (BTC, ETH, SOL ప్రయారిటీ + స్టేబుల్‌కాయిన్ ఫిల్టర్)
 def get_top_momentum_crypto(limit=15):
+    priority_coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+    blacklist = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "EURUSDT", "AEURUSDT"]
+    
     try:
         url = "https://api.binance.com/api/v3/ticker/24hr"
         resp = requests.get(url, timeout=4)
@@ -74,18 +77,23 @@ def get_top_momentum_crypto(limit=15):
             valid = []
             for t in tickers:
                 sym = t['symbol']
-                if sym.endswith("USDT") and not any(x in sym for x in ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT"]):
+                if sym.endswith("USDT") and sym not in blacklist and not any(x in sym for x in ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT"]):
                     vol_usd = float(t['quoteVolume'])
                     if vol_usd >= 15000000:
                         valid.append({"symbol": sym, "volume": vol_usd})
             valid.sort(key=lambda x: x['volume'], reverse=True)
             top_coins = [x['symbol'] for x in valid[:limit]]
-            if "BTCUSDT" not in top_coins:
-                top_coins.insert(0, "BTCUSDT")
+            
+            # మేజర్ కాయిన్స్ లిస్ట్‌లో ముందు ఉండేలా చూసుకోవడం
+            for pc in reversed(priority_coins):
+                if pc in top_coins:
+                    top_coins.remove(pc)
+                top_coins.insert(0, pc)
+                
             return top_coins
     except Exception as e:
         print("Crypto Ticker Error: " + str(e))
-    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "NEARUSDT", "AVAXUSDT"]
+    return priority_coins
 
 # 2. Binance Zero-Delay 5m క్యాండిల్స్
 def fetch_binance_live(symbol="BTCUSDT", limit=40):
@@ -179,14 +187,14 @@ def background_scanner_and_audit():
         try:
             now = datetime.now(ist)
 
-            # ఉదయం 9:15 రీసెట్
+            # ప్రతిరోజు ఉదయం 9:15 కి డేటా రీసెట్
             if now.hour == 9 and now.minute < 15:
                 SENT_ALERTS = {s: set() for s in STRATEGIES}
                 ACTIVE_TRADES = {s: {} for s in STRATEGIES}
                 AUDIT_LOGS = {s: [] for s in STRATEGIES}
                 AUDIT_SENT_TODAY = False
 
-            # సాయంత్రం 03:30 PM - మొత్తం 6 విడివిడి ఆడిట్ రిపోర్టులు
+            # సాయంత్రం 03:30 PM దాటాక మొత్తం 6 ప్రత్యేక ఆడిట్ రిపోర్టులు
             if now.hour >= 15 and now.minute >= 30 and not AUDIT_SENT_TODAY:
                 for strat in STRATEGIES:
                     for sym, pos in list(ACTIVE_TRADES[strat].items()):
@@ -212,7 +220,7 @@ def background_scanner_and_audit():
                 AUDIT_SENT_TODAY = True
 
             # ----------------------------------------------------
-            # 1. 24/7 క్రిప్టో లైవ్ స్కాన్ (టాప్ ఆల్ట్‌కాయిన్స్ + BTC)
+            # 1. 24/7 క్రిప్టో లైవ్ స్కాన్ (టాప్ ఆల్ట్‌కాయిన్స్ + BTC, ETH, SOL)
             # ----------------------------------------------------
             crypto_list = get_top_momentum_crypto(limit=15)
             for pair in crypto_list:
@@ -245,7 +253,7 @@ def background_scanner_and_audit():
                         except:
                             pass
 
-                    # Report 6 క్రిప్టో సిగ్నల్
+                    # Report 6 క్రిప్టో సిగ్నల్ (15 EMA బౌన్స్ + AI కన్ఫర్మేషన్)
                     if (pa_score >= 60 and curr_p >= ema_15) and pair not in SENT_ALERTS["CRYPTO_TYPE5_15EMA_AI"]:
                         SENT_ALERTS["CRYPTO_TYPE5_15EMA_AI"].add(pair)
                         sl = round(curr_p * 0.992, 4)
@@ -254,7 +262,7 @@ def background_scanner_and_audit():
                         alert_msg = (
                             "🤖 *[REPORT 6: 24/7 CRYPTO 15 EMA + AI]*\n"
                             "━━━━━━━━━━━━━━━━━━━━\n"
-                            "📌 Coin: `" + str(pair) + "` (High Volume Altcoin)\n"
+                            "📌 Coin: `" + str(pair) + "`\n"
                             "🎯 AI Confidence: `" + str(pa_score) + "%`\n"
                             "📈 15 EMA: $" + str(ema_15) + "\n"
                             "📥 Live Entry: $" + str(curr_p) + "\n"
@@ -266,7 +274,7 @@ def background_scanner_and_audit():
                         send_telegram_msg(alert_msg)
 
             # ----------------------------------------------------
-            # 2. NSE స్టాక్స్ లైవ్ స్కాన్ (మార్కెట్ సమయాల్లో మాత్రమే)
+            # 2. NSE స్టాక్స్ లైవ్ స్కాన్ (మార్కెట్ వేళల్లోనే)
             # ----------------------------------------------------
             if is_nse_market_open():
                 for sym in NSE_STOCKS:
@@ -285,7 +293,6 @@ def background_scanner_and_audit():
                     r1 = round((2 * pivot) - data['low'], 2)
                     s1 = round((2 * pivot) - data['high'], 2)
 
-                    # Type 1 & 3 మోడల్ స్కోర్
                     ai_fvg_score = 50
                     if ai_model_fvg is not None:
                         try:
@@ -383,7 +390,7 @@ def background_scanner_and_audit():
 
 threading.Thread(target=background_scanner_and_audit, daemon=True).start()
 
-# యాప్‌లో బటన్ క్లిక్ చేసినప్పుడు తక్షణమే ఎన్‌ఎస్‌ఈ స్టాక్స్ లేదా క్రిప్టో రిజల్ట్
+# యాప్‌లో SCAN బటన్ క్లిక్ చేసినప్పుడు తక్షణమే పనిచేసే డైనమిక్ ఎండ్‌పాయింట్
 @application.route('/scan_top', methods=['GET'])
 def scan_top():
     ist_now = datetime.now(pytz.timezone("Asia/Kolkata"))
@@ -402,9 +409,9 @@ def scan_top():
                     "accuracy": "RSI: " + str(data['rsi'])
                 }])
 
-    # 2. మార్కెట్ క్లోజ్ అయితే లేదా క్రిప్టో కోసం: బైనాన్స్ హై మూమెంటమ్ కాయిన్
-    dynamic_coins = ["SOLUSDT", "BTCUSDT", "ETHUSDT", "DOGEUSDT"]
-    for pair in dynamic_coins:
+    # 2. మార్కెట్ క్లోజ్ అయితే లేదా క్రిప్టో కోసం: బైనాన్స్ హై మూమెంటమ్ కాయిన్స్
+    crypto_list = get_top_momentum_crypto(limit=8)
+    for pair in crypto_list:
         df = fetch_binance_live(pair, limit=30)
         if df is not None and len(df) >= 15:
             curr_p = round(float(df['close'].iloc[-1]), 4)
