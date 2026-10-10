@@ -111,7 +111,6 @@ def is_nse_market_open():
     cur_mins = ist_now.hour * 60 + ist_now.minute
     return 555 <= cur_mins <= 930
 
-# Type 4: Wyckoff & SMC Institutional Price Action కాలిక్యులేషన్
 def evaluate_price_action_setup(live_data):
     p = live_data['close']
     h = live_data['high']
@@ -120,25 +119,23 @@ def evaluate_price_action_setup(live_data):
     vwap = live_data['vwap']
     sma20 = live_data['sma_20']
 
-    # 1. Breakout & Retest
     if p > vwap and p > sma20 and p > o and (h - l) > 0:
         sl = round(l - (p * 0.002), 2)
         risk = round(p - sl, 2)
         if risk > 0:
             return {
-                "model": "Breakout & Retest",
-                "setup": "Support Retest above VWAP & 20 SMA",
+                "model": "Breakout and Retest",
+                "setup": "Support Retest above VWAP and 20 SMA",
                 "entry": p, "sl": sl, "target": round(p + (risk * 2), 2), "risk": risk, "rr": "1:2.0"
             }
 
-    # 2. Wyckoff Accumulation Spring
     if p > o and p >= (h - (h - l) * 0.3) and p > vwap:
         sl = round(l - 0.20, 2)
         risk = round(p - sl, 2)
         if risk > 0:
             return {
                 "model": "Wyckoff Theory",
-                "setup": "Accumulation Spring -> Markup Expansion",
+                "setup": "Accumulation Spring to Markup Expansion",
                 "entry": p, "sl": sl, "target": round(p + (risk * 2), 2), "risk": risk, "rr": "1:2.0"
             }
 
@@ -152,44 +149,39 @@ def background_scanner_and_audit():
         try:
             now = datetime.now(ist)
 
-            # ప్రతిరోజూ ఉదయం 9:15 కి డేటా రీసెట్
             if now.hour == 9 and now.minute < 15:
                 SENT_ALERTS = {s: set() for s in STRATEGIES}
                 ACTIVE_TRADES = {s: {} for s in STRATEGIES}
                 AUDIT_LOGS = {s: [] for s in STRATEGIES}
                 AUDIT_SENT_TODAY = False
 
-            # సాయంత్రం 03:30 PM దాటాక 5 ప్రత్యేక ఆడిట్ రిపోర్టులు
             if now.hour >= 15 and now.minute >= 30 and not AUDIT_SENT_TODAY:
                 for strat in STRATEGIES:
                     for sym, pos in list(ACTIVE_TRADES[strat].items()):
-                        AUDIT_LOGS[strat].append(f"🟢 {sym}: CLOSED AT 03:30 PM | P&L: ₹0.00 (Exit: ₹{pos['entry']})")
+                        AUDIT_LOGS[strat].append(f"CLOSED AT 03:30 PM | {sym} | Exit: {pos['entry']}")
                     ACTIVE_TRADES[strat].clear()
 
                 titles = {
-                    "AI": "📊 *[AUDIT 1: PURE 365-DAY AI MODEL REPORT]*",
-                    "QUANT": "📊 *[AUDIT 2: FAST QUANT INDICATORS REPORT]*",
-                    "HYBRID": "📊 *[AUDIT 3: HYBRID CONFLUENCE (AI + QUANT) REPORT]*",
-                    "PRICE_ACTION": "📊 *[AUDIT 4: INSTITUTIONAL PRICE ACTION REPORT]*",
-                    "PA_15EMA_AI": "📊 *[AUDIT 5: 15 EMA + PRICE ACTION AI (24/7) REPORT]*"
+                    "AI": "*[AUDIT 1: PURE 365-DAY AI MODEL REPORT]*",
+                    "QUANT": "*[AUDIT 2: FAST QUANT INDICATORS REPORT]*",
+                    "HYBRID": "*[AUDIT 3: HYBRID CONFLUENCE REPORT]*",
+                    "PRICE_ACTION": "*[AUDIT 4: INSTITUTIONAL PRICE ACTION REPORT]*",
+                    "PA_15EMA_AI": "*[AUDIT 5: 15 EMA PRICE ACTION AI (24/7) REPORT]*"
                 }
 
                 for strat in STRATEGIES:
-                    pnl = sum([float(l.split('P&L: ₹')[1].split(' ')[0]) for l in AUDIT_LOGS[strat] if 'P&L: ₹' in l])
+                    logs_text = "\n".join(AUDIT_LOGS[strat][-5:]) if AUDIT_LOGS[strat] else "No Trades Today"
                     msg = (
-                        f"{titles[strat]}\n"
-                        f"💰 *NET PROFIT: ₹{round(pnl, 2)}*\n"
+                        f"📊 {titles[strat]}\n"
                         f"────────────────────\n"
-                        f"⏱️ *Audit Logs:*\n" + ("\n".join(AUDIT_LOGS[strat][-5:]) if AUDIT_LOGS[strat] else "No Trades Today")
+                        f"⏱️ *Audit Logs:*\n{logs_text}"
                     )
                     send_telegram_msg(msg)
                     time.sleep(1)
 
                 AUDIT_SENT_TODAY = True
 
-            # ==========================================
-            # A. 24/7 క్రిప్టో లైవ్ స్కాన్ (BINANCE REAL-TIME)
-            # ==========================================
+            # 24/7 క్రిప్టో లైవ్ స్కాన్
             for pair in CRYPTO_PAIRS:
                 df = fetch_binance_live(pair)
                 if df is not None and len(df) >= 30:
@@ -197,12 +189,10 @@ def background_scanner_and_audit():
                     df['ema_15'] = df['close'].ewm(span=15, adjust=False).mean()
                     ema_15 = round(float(df['ema_15'].iloc[-1]), 2)
 
-                    # పివోట్స్
                     pivot = (float(df['high'].max()) + float(df['low'].min()) + curr_p) / 3.0
                     s1 = round((2 * pivot) - float(df['high'].max()), 2)
                     r1 = round((2 * pivot) - float(df['low'].min()), 2)
 
-                    # Type 5: 15 EMA + ప్రైస్ యాక్షన్ AI స్కోరింగ్
                     candle_range = df['high'] - df['low'] + 1e-9
                     body_ratio = float(((df['close'] - df['open']).abs() / candle_range).iloc[-1])
                     upper_wick = float(((df['high'] - df[['open', 'close']].max(axis=1)) / candle_range).iloc[-1])
@@ -222,7 +212,6 @@ def background_scanner_and_audit():
                         except:
                             pass
 
-                    # 15 EMA బౌన్స్ + 60% కాన్ఫిడెన్స్
                     if (pa_score >= 60 or curr_p >= ema_15) and pair not in SENT_ALERTS["PA_15EMA_AI"]:
                         SENT_ALERTS["PA_15EMA_AI"].add(pair)
                         sl = round(curr_p * 0.992, 2)
@@ -238,12 +227,10 @@ def background_scanner_and_audit():
                             f"🛑 SL: ${sl} \vert{} 🎯 Target: ${tgt}\n"
                             f"🛡️ S1: ${s1} \vert{} 🚧 R1: ${r1}\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"⚡ _Zero-Lag Real-Time WebSocket Feed_"
+                            f"⚡ _Zero-Lag Binance API Active_"
                         )
 
-            # ==========================================
-            # B. ఎన్‌ఎస్‌ఈ స్టాక్స్ లైవ్ స్కాన్ (మార్కెట్ వేళల్లోనే)
-            # ==========================================
+            # ఎన్‌ఎస్‌ఈ స్టాక్స్ లైవ్ స్కాన్
             if is_nse_market_open():
                 for sym in NSE_STOCKS:
                     data = fetch_tradingview_nse_live(sym)
@@ -260,7 +247,6 @@ def background_scanner_and_audit():
                     r1 = round((2 * pivot) - data['low'], 2)
                     s1 = round((2 * pivot) - data['high'], 2)
 
-                    # 1. Type 1: Pure AI
                     ai_fvg_score = 50
                     if ai_model_fvg is not None:
                         try:
@@ -285,7 +271,6 @@ def background_scanner_and_audit():
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
 
-                    # 2. Type 2: Quant Indicators
                     quant_pass = (ema_5 > ema_13) and (price > vwap) and (45 <= rsi <= 65)
                     if quant_pass and sym not in SENT_ALERTS["QUANT"]:
                         SENT_ALERTS["QUANT"].add(sym)
@@ -302,7 +287,6 @@ def background_scanner_and_audit():
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
 
-                    # 3. Type 3: Hybrid Confluence (AI + Quant)
                     if ai_fvg_score >= 60 and quant_pass and sym not in SENT_ALERTS["HYBRID"]:
                         SENT_ALERTS["HYBRID"].add(sym)
                         sl = round(price * 0.993, 2)
@@ -311,14 +295,13 @@ def background_scanner_and_audit():
                         send_telegram_msg(
                             f"🚀 *[TYPE 3: HIGH CONFIDENCE CONFLUENCE]*\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 Stock: `{sym}` (Dual Verified)\n"
+                            f"📌 Stock: `{sym}`\n"
                             f"🎯 AI Score: {ai_fvg_score}% | RSI: {rsi}\n"
                             f"📥 CMP: ₹{price}\n"
                             f"🛑 SL: ₹{sl} | 🎯 Target: ₹{tgt}\n"
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
 
-                    # 4. Type 4: Master Price Action (Wyckoff / SMC)
                     pa_setup = evaluate_price_action_setup(data)
                     if pa_setup and sym not in SENT_ALERTS["PRICE_ACTION"]:
                         SENT_ALERTS["PRICE_ACTION"].add(sym)
@@ -329,7 +312,7 @@ def background_scanner_and_audit():
                             f"📌 Stock: `{sym}`\n"
                             f"⚡ Strategy: *{pa_setup['model']}*\n"
                             f"🎯 Setup: _{pa_setup['setup']}_\n"
-                            f"📥 Signal: BUY 🟢 @ ₹{pa_setup['entry']}\n"
+                            f"📥 Signal: BUY @ ₹{pa_setup['entry']}\n"
                             f"🛑 SL: ₹{pa_setup['sl']} | 🎯 Target: ₹{pa_setup['target']}\n"
                             f"⚖️ Risk: ₹{pa_setup['risk']} | R:R: {pa_setup['rr']}\n"
                             f"━━━━━━━━━━━━━━━━━━━━"
@@ -343,7 +326,7 @@ threading.Thread(target=background_scanner_and_audit, daemon=True).start()
 
 @application.route('/scan_top', methods=['GET'])
 def scan_top():
-    return jsonify({"status": "RUNNING", "engine": "5-Tier Multi-Market Live Engine", "zero_delay": True})
+    return jsonify({"status": "RUNNING", "engine": "5-Tier Zero-Delay Engine Active"})
 
 @application.route('/test_telegram', methods=['GET'])
 def test_telegram():
@@ -357,9 +340,9 @@ def home():
         "engine": "5-Tier Stock & 24/7 Crypto AI Platform",
         "crypto_feed": "Binance Direct (Zero-Delay)",
         "nse_feed": "TradingView Scanner Direct (Zero-Delay)",
-        "yfinance_removed": True,
         "audits": "5 Separate Real-Time Statements"
     })
 
 if __name__ == '__main__':
     application.run(host='0.0.0.0', port=5000)
+
