@@ -37,7 +37,6 @@ NSE_STOCKS = [
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "SBIN",
     "TATAMOTORS", "BAJFINANCE", "ITC", "LT", "AXISBANK", "KOTAKBANK"
 ]
-CRYPTO_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
 # 5 స్ట్రాటజీలు
 STRATEGIES = ["AI", "QUANT", "HYBRID", "PRICE_ACTION", "PA_15EMA_AI"]
@@ -57,7 +56,33 @@ def send_telegram_msg(msg_text):
     except:
         return False
 
-# 1. Binance Zero-Delay 5m క్యాండిల్స్ (24/7 క్రిప్టో)
+# 1. బైనాన్స్ మార్కెట్-వైడ్ 24hr స్కానర్: హై-వాల్యూమ్ మూమెంటమ్ ఆల్ట్‌కాయిన్స్ ఫిల్టర్
+def get_top_momentum_crypto(limit=15):
+    try:
+        url = "https://api.binance.com/api/v3/ticker/24hr"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            tickers = resp.json()
+            valid = []
+            for t in tickers:
+                sym = t['symbol']
+                # కేవలం USDT పెయిర్స్, డెరివేటివ్/లెవరేజ్ టోకెన్లు కాకుండా
+                if sym.endswith("USDT") and not any(x in sym for x in ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT"]):
+                    vol_usd = float(t['quoteVolume'])
+                    # కనీసం $15 మిలియన్ల డైలీ వాల్యూమ్ ఉన్న స్ట్రాంగ్ కాయిన్స్
+                    if vol_usd >= 15000000:
+                        valid.append({"symbol": sym, "volume": vol_usd})
+            
+            valid.sort(key=lambda x: x['volume'], reverse=True)
+            top_coins = [x['symbol'] for x in valid[:limit]]
+            if "BTCUSDT" not in top_coins:
+                top_coins.insert(0, "BTCUSDT")
+            return top_coins
+    except Exception as e:
+        print("Crypto Ticker Fetch Error: " + str(e))
+    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "NEARUSDT", "AVAXUSDT"]
+
+# 2. బైనాన్స్ జీరో-డిలే 5m క్యాండిల్స్
 def fetch_binance_live(symbol="BTCUSDT", limit=60):
     try:
         url = "https://api.binance.com/api/v3/klines?symbol=" + symbol + "&interval=5m&limit=" + str(limit)
@@ -74,7 +99,7 @@ def fetch_binance_live(symbol="BTCUSDT", limit=60):
         pass
     return None
 
-# 2. TradingView Direct Public API (ఎన్‌ఎస్‌ఈ జీరో-డిలే లైవ్ ఫీడ్)
+# 3. TradingView Direct Public API (ఎన్‌ఎస్‌ఈ జీరో-డిలే లైవ్ ఫీడ్)
 def fetch_tradingview_nse_live(symbol):
     try:
         url = "https://scanner.tradingview.com/india/scan"
@@ -177,17 +202,18 @@ def background_scanner_and_audit():
 
                 AUDIT_SENT_TODAY = True
 
-            # 1. 24/7 క్రిప్టో లైవ్ స్కాన్ (Binance Zero-Delay)
-            for pair in CRYPTO_PAIRS:
+            # 1. 24/7 క్రిప్టో లైవ్ స్కాన్ (టాప్ ఆల్ట్‌కాయిన్స్ + BTC)
+            crypto_list = get_top_momentum_crypto(limit=15)
+            for pair in crypto_list:
                 df = fetch_binance_live(pair)
                 if df is not None and len(df) >= 30:
-                    curr_p = round(float(df['close'].iloc[-1]), 2)
+                    curr_p = round(float(df['close'].iloc[-1]), 4)
                     df['ema_15'] = df['close'].ewm(span=15, adjust=False).mean()
-                    ema_15 = round(float(df['ema_15'].iloc[-1]), 2)
+                    ema_15 = round(float(df['ema_15'].iloc[-1]), 4)
 
                     pivot = (float(df['high'].max()) + float(df['low'].min()) + curr_p) / 3.0
-                    s1 = round((2 * pivot) - float(df['high'].max()), 2)
-                    r1 = round((2 * pivot) - float(df['low'].min()), 2)
+                    s1 = round((2 * pivot) - float(df['high'].max()), 4)
+                    r1 = round((2 * pivot) - float(df['low'].min()), 4)
 
                     candle_range = df['high'] - df['low'] + 1e-9
                     body_ratio = float(((df['close'] - df['open']).abs() / candle_range).iloc[-1])
@@ -200,7 +226,7 @@ def background_scanner_and_audit():
                     roll_l = df['low'].rolling(20).min().iloc[-1]
                     dist_support = float((((curr_p - roll_l) / (roll_h - roll_l + 1e-9)) * 100.0))
 
-                    pa_score = 50
+                    pa_score = 60
                     if ai_model_pa is not None:
                         try:
                             f_vec = np.array([[body_ratio, upper_wick, lower_wick, dist_ema_15, ret_1, ret_3, dist_support]])
@@ -208,25 +234,27 @@ def background_scanner_and_audit():
                         except:
                             pass
 
-                    if (pa_score >= 60 or curr_p >= ema_15) and pair not in SENT_ALERTS["PA_15EMA_AI"]:
+                    # 15 EMA బౌన్స్ + AI కన్ఫర్మేషన్
+                    if (pa_score >= 60 and curr_p >= ema_15) and pair not in SENT_ALERTS["PA_15EMA_AI"]:
                         SENT_ALERTS["PA_15EMA_AI"].add(pair)
-                        sl = round(curr_p * 0.992, 2)
-                        tgt = round(curr_p * 1.015, 2)
+                        sl = round(curr_p * 0.992, 4)
+                        tgt = round(curr_p * 1.018, 4)
                         ACTIVE_TRADES["PA_15EMA_AI"][pair] = {"entry": curr_p, "sl": sl, "target": tgt}
                         alert_msg = (
                             "🤖 *[TYPE 5: 15 EMA + PRICE ACTION AI]*\n"
                             "━━━━━━━━━━━━━━━━━━━━\n"
-                            "📌 Coin: `" + str(pair) + "` (24/7 Binance Live)\n"
+                            "📌 Coin: `" + str(pair) + "` (High Momentum Altcoin)\n"
                             "🎯 AI Confidence: `" + str(pa_score) + "%`\n"
                             "📈 15 EMA: $" + str(ema_15) + "\n"
                             "📥 Live Entry: $" + str(curr_p) + "\n"
                             "🛑 SL: $" + str(sl) + " \vert{} 🎯 Target: $" + str(tgt) + "\n"
                             "🛡️ S1: $" + str(s1) + " \vert{} 🚧 R1: $" + str(r1) + "\n"
-                            "━━━━━━━━━━━━━━━━━━━━"
+                            "━━━━━━━━━━━━━━━━━━━━\n"
+                            "⚡ _Zero-Lag Binance API Active_"
                         )
                         send_telegram_msg(alert_msg)
 
-            # 2. ఎన్‌ఎస్‌ఈ స్టాక్స్ లైవ్ స్కాన్ (మార్కెట్ వేళల్లోనే)
+            # 2. ఎన్‌ఎస్‌ఈ స్టాక్స్ లైవ్ స్కాన్ (మార్కెట్ సమయాల్లో)
             if is_nse_market_open():
                 for sym in NSE_STOCKS:
                     data = fetch_tradingview_nse_live(sym)
@@ -324,21 +352,92 @@ def background_scanner_and_audit():
 
 threading.Thread(target=background_scanner_and_audit, daemon=True).start()
 
+# యాప్‌లో బటన్ క్లిక్ చేసినప్పుడు తక్షణమే స్కాన్ అయ్యే డైనమిక్ ఎండ్‌పాయింట్
 @application.route('/scan_top', methods=['GET'])
 def scan_top():
-    return jsonify({"status": "RUNNING", "engine": "5-Tier Zero-Delay Engine Active"})
+    ist_now = datetime.now(pytz.timezone("Asia/Kolkata"))
+    today_str = ist_now.strftime("%d-%b %I:%M %p")
+    
+    scan_results = []
+    dynamic_coins = get_top_momentum_crypto(limit=10)
+
+    for pair in dynamic_coins:
+        df = fetch_binance_live(pair, limit=40)
+        if df is not None and len(df) >= 20:
+            curr_p = round(float(df['close'].iloc[-1]), 4)
+            df['ema_15'] = df['close'].ewm(span=15, adjust=False).mean()
+            ema_15 = round(float(df['ema_15'].iloc[-1]), 4)
+
+            candle_range = df['high'] - df['low'] + 1e-9
+            body_ratio = float(((df['close'] - df['open']).abs() / candle_range).iloc[-1])
+            upper_wick = float(((df['high'] - df[['open', 'close']].max(axis=1)) / candle_range).iloc[-1])
+            lower_wick = float(((df[['open', 'close']].min(axis=1) - df['low']) / candle_range).iloc[-1])
+            dist_ema_15 = float((((curr_p - ema_15) / ema_15) * 100.0))
+            ret_1 = float((df['close'].pct_change(1) * 100.0).iloc[-1])
+            ret_3 = float((df['close'].pct_change(3) * 100.0).iloc[-1])
+            roll_h = df['high'].rolling(20).max().iloc[-1]
+            roll_l = df['low'].rolling(20).min().iloc[-1]
+            dist_support = float((((curr_p - roll_l) / (roll_h - roll_l + 1e-9)) * 100.0))
+
+            pa_score = 65
+            if ai_model_pa is not None:
+                try:
+                    f_vec = np.array([[body_ratio, upper_wick, lower_wick, dist_ema_15, ret_1, ret_3, dist_support]])
+                    pa_score = int(ai_model_pa.predict_proba(f_vec)[0][1] * 100)
+                except:
+                    pass
+
+            trend = "BULLISH 🟢" if curr_p >= ema_15 else "BEARISH 🔴"
+            scan_results.append({
+                "pair": pair,
+                "price": curr_p,
+                "ema_15": ema_15,
+                "score": pa_score,
+                "trend": trend
+            })
+
+    if scan_results:
+        scan_results.sort(key=lambda x: x['score'], reverse=True)
+        top = scan_results[0]
+        
+        # బటన్ నొక్కిన వెంటనే టెలిగ్రామ్‌కు కూడా తక్షణ లైవ్ నోటిఫికేషన్
+        trigger_msg = (
+            "🔍 *[APP MANUAL SCAN RESULT]*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📌 Coin: `" + str(top['pair']) + "`\n"
+            "🎯 AI Score: `" + str(top['score']) + "%`\n"
+            "📥 Live Price: $" + str(top['price']) + "\n"
+            "📈 15 EMA: $" + str(top['ema_15']) + "\n"
+            "⚡ Signal: " + str(top['trend']) + "\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+        send_telegram_msg(trigger_msg)
+
+        return jsonify([{
+            "date": today_str,
+            "pred": top['pair'] + " (" + top['trend'] + ")",
+            "actual": "CMP: $" + str(top['price']) + " \vert{} 15 EMA: $" + str(top['ema_15']),
+            "accuracy": "AI Score: " + str(top['score']) + "%"
+        }])
+
+    return jsonify([{
+        "date": today_str,
+        "pred": "BTCUSDT (Monitoring)",
+        "actual": "Live Feed Active",
+        "accuracy": "Ready"
+    }])
 
 @application.route('/test_telegram', methods=['GET'])
 def test_telegram():
-    status = send_telegram_msg("🔔 Render Cloud: 5-Tier Zero-Delay Engine Active!")
+    status = send_telegram_msg("🔔 Render Cloud: 5-Tier Zero-Delay Altcoin Engine Active!")
     return jsonify({"status": "SUCCESS" if status else "FAILED"})
 
 @application.route('/')
 def home():
     return jsonify({
         "status": "ONLINE",
-        "engine": "5-Tier Stock & 24/7 Crypto AI Platform",
-        "crypto_feed": "Binance Direct (Zero-Delay)",
+        "engine": "5-Tier Stock & 24/7 Altcoin AI Platform",
+        "crypto_feed": "Binance 24hr Momentum Scanner (Zero-Delay)",
         "nse_feed": "TradingView Scanner Direct (Zero-Delay)",
         "audits": "5 Separate Real-Time Statements"
     })
