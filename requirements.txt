@@ -5,5 +5,3 @@ numpy
 joblib
 scikit-learn
 pytz
-yfinance
-git+https://github.com/StreamAlpha/tvdatafeed.git
