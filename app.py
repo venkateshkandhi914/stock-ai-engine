@@ -21,15 +21,17 @@ ai_model_fvg = None
 if os.path.exists("fvg_ai_model.pkl"):
     try:
         ai_model_fvg = joblib.load("fvg_ai_model.pkl")
-    except:
-        pass
+        print("Type 1: FVG AI Model Loaded")
+    except Exception as e:
+        print("FVG Model Load Error: " + str(e))
 
 ai_model_pa = None
 if os.path.exists("price_action_ai_model.pkl"):
     try:
         ai_model_pa = joblib.load("price_action_ai_model.pkl")
-    except:
-        pass
+        print("Type 5: 15 EMA Price Action AI Model Loaded")
+    except Exception as e:
+        print("PA Model Load Error: " + str(e))
 
 NSE_STOCKS = [
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "SBIN",
@@ -37,7 +39,7 @@ NSE_STOCKS = [
 ]
 CRYPTO_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-# 5 విభిన్న స్ట్రాటజీలు
+# 5 స్ట్రాటజీలు
 STRATEGIES = ["AI", "QUANT", "HYBRID", "PRICE_ACTION", "PA_15EMA_AI"]
 SENT_ALERTS = {s: set() for s in STRATEGIES}
 ACTIVE_TRADES = {s: {} for s in STRATEGIES}
@@ -47,7 +49,7 @@ AUDIT_SENT_TODAY = False
 def send_telegram_msg(msg_text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg_text, "parse_mode": "Markdown"}
     try:
         resp = requests.post(url, json=payload, timeout=8.0)
@@ -55,10 +57,10 @@ def send_telegram_msg(msg_text):
     except:
         return False
 
-# 1. Binance Zero-Delay లైవ్ క్యాండిల్స్ (24/7 క్రిప్టో)
+# 1. Binance Zero-Delay 5m క్యాండిల్స్ (24/7 క్రిప్టో)
 def fetch_binance_live(symbol="BTCUSDT", limit=60):
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit={limit}"
+        url = "https://api.binance.com/api/v3/klines?symbol=" + symbol + "&interval=5m&limit=" + str(limit)
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             df = pd.DataFrame(resp.json(), columns=[
@@ -72,12 +74,12 @@ def fetch_binance_live(symbol="BTCUSDT", limit=60):
         pass
     return None
 
-# 2. TradingView Direct Public API (NSE Zero-Delay)
+# 2. TradingView Direct Public API (ఎన్‌ఎస్‌ఈ జీరో-డిలే లైవ్ ఫీడ్)
 def fetch_tradingview_nse_live(symbol):
     try:
         url = "https://scanner.tradingview.com/india/scan"
         payload = {
-            "symbols": {"tickers": [f"NSE:{symbol}"], "query": {"types": []}},
+            "symbols": {"tickers": ["NSE:" + symbol], "query": {"types": []}},
             "columns": ["open", "high", "low", "close", "volume", "change", "VWAP", "RSI", "EMA5", "EMA13", "EMA20"]
         }
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -156,7 +158,7 @@ def background_scanner_and_audit():
             if now.hour >= 15 and now.minute >= 30 and not AUDIT_SENT_TODAY:
                 for strat in STRATEGIES:
                     for sym, pos in list(ACTIVE_TRADES[strat].items()):
-                        AUDIT_LOGS[strat].append(f"CLOSED @ 03:30 PM | {sym} | Entry: {pos['entry']}")
+                        AUDIT_LOGS[strat].append("CLOSED @ 03:30 PM | " + sym + " | Entry: " + str(pos['entry']))
                     ACTIVE_TRADES[strat].clear()
 
                 titles = {
@@ -169,11 +171,7 @@ def background_scanner_and_audit():
 
                 for strat in STRATEGIES:
                     logs_txt = "\n".join(AUDIT_LOGS[strat][-5:]) if AUDIT_LOGS[strat] else "No Trades Today"
-                    msg = (
-                        f"📊 *[{titles[strat]}]*\n"
-                        f"────────────────────\n"
-                        f"⏱️ *Audit Logs:*\n{logs_txt}"
-                    )
+                    msg = "📊 *[" + titles[strat] + "]*\n────────────────────\n⏱️ *Audit Logs:*\n" + logs_txt
                     send_telegram_msg(msg)
                     time.sleep(1)
 
@@ -216,15 +214,15 @@ def background_scanner_and_audit():
                         tgt = round(curr_p * 1.015, 2)
                         ACTIVE_TRADES["PA_15EMA_AI"][pair] = {"entry": curr_p, "sl": sl, "target": tgt}
                         alert_msg = (
-                            f"🤖 *[TYPE 5: 15 EMA + PRICE ACTION AI]*\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 Coin: `{pair}` (24/7 Binance Live)\n"
-                            f"🎯 AI Confidence: `{pa_score}%`\n"
-                            f"📈 15 EMA: ${ema_15}\n"
-                            f"📥 Live Entry: ${curr_p}\n"
-                            f"🛑 SL: ${sl} \vert{} 🎯 Target: ${tgt}\n"
-                            f"🛡️ S1: ${s1} \vert{} 🚧 R1: ${r1}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━"
+                            "🤖 *[TYPE 5: 15 EMA + PRICE ACTION AI]*\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n"
+                            "📌 Coin: `" + str(pair) + "` (24/7 Binance Live)\n"
+                            "🎯 AI Confidence: `" + str(pa_score) + "%`\n"
+                            "📈 15 EMA: $" + str(ema_15) + "\n"
+                            "📥 Live Entry: $" + str(curr_p) + "\n"
+                            "🛑 SL: $" + str(sl) + " \vert{} 🎯 Target: $" + str(tgt) + "\n"
+                            "🛡️ S1: $" + str(s1) + " \vert{} 🚧 R1: $" + str(r1) + "\n"
+                            "━━━━━━━━━━━━━━━━━━━━"
                         )
                         send_telegram_msg(alert_msg)
 
@@ -260,14 +258,14 @@ def background_scanner_and_audit():
                         tgt = round(price * 1.012, 2)
                         ACTIVE_TRADES["AI"][sym] = {"entry": price, "sl": sl, "target": tgt}
                         send_telegram_msg(
-                            f"🟢 *[TYPE 1: PURE AI BUY ALERT]*\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 Stock: `{sym}`\n"
-                            f"🎯 AI Confidence: `{ai_fvg_score}%`\n"
-                            f"📥 CMP: ₹{price}\n"
-                            f"🛑 SL: ₹{sl} | 🎯 Target: ₹{tgt}\n"
-                            f"🛡️ S1: ₹{s1} | 🚧 R1: ₹{r1}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━"
+                            "🟢 *[TYPE 1: PURE AI BUY ALERT]*\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n"
+                            "📌 Stock: `" + str(sym) + "`\n"
+                            "🎯 AI Confidence: `" + str(ai_fvg_score) + "%`\n"
+                            "📥 CMP: ₹" + str(price) + "\n"
+                            "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
+                            "🛡️ S1: ₹" + str(s1) + " | 🚧 R1: ₹" + str(r1) + "\n"
+                            "━━━━━━━━━━━━━━━━━━━━"
                         )
 
                     # Type 2
@@ -278,13 +276,13 @@ def background_scanner_and_audit():
                         tgt = round(price * 1.012, 2)
                         ACTIVE_TRADES["QUANT"][sym] = {"entry": price, "sl": sl, "target": tgt}
                         send_telegram_msg(
-                            f"⚡ *[TYPE 2: FAST QUANT INDICATORS ALERT]*\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 Stock: `{sym}`\n"
-                            f"📊 RSI: {rsi} | VWAP: ₹{vwap}\n"
-                            f"📥 CMP: ₹{price}\n"
-                            f"🛑 SL: ₹{sl} | 🎯 Target: ₹{tgt}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━"
+                            "⚡ *[TYPE 2: FAST QUANT INDICATORS ALERT]*\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n"
+                            "📌 Stock: `" + str(sym) + "`\n"
+                            "📊 RSI: " + str(rsi) + " | VWAP: ₹" + str(vwap) + "\n"
+                            "📥 CMP: ₹" + str(price) + "\n"
+                            "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
+                            "━━━━━━━━━━━━━━━━━━━━"
                         )
 
                     # Type 3
@@ -294,13 +292,13 @@ def background_scanner_and_audit():
                         tgt = round(price * 1.015, 2)
                         ACTIVE_TRADES["HYBRID"][sym] = {"entry": price, "sl": sl, "target": tgt}
                         send_telegram_msg(
-                            f"🚀 *[TYPE 3: HIGH CONFIDENCE CONFLUENCE]*\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 Stock: `{sym}`\n"
-                            f"🎯 AI Score: {ai_fvg_score}% | RSI: {rsi}\n"
-                            f"📥 CMP: ₹{price}\n"
-                            f"🛑 SL: ₹{sl} | 🎯 Target: ₹{tgt}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━"
+                            "🚀 *[TYPE 3: HIGH CONFIDENCE CONFLUENCE]*\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n"
+                            "📌 Stock: `" + str(sym) + "`\n"
+                            "🎯 AI Score: " + str(ai_fvg_score) + "% | RSI: " + str(rsi) + "\n"
+                            "📥 CMP: ₹" + str(price) + "\n"
+                            "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
+                            "━━━━━━━━━━━━━━━━━━━━"
                         )
 
                     # Type 4
@@ -309,15 +307,15 @@ def background_scanner_and_audit():
                         SENT_ALERTS["PRICE_ACTION"].add(sym)
                         ACTIVE_TRADES["PRICE_ACTION"][sym] = {"entry": pa_setup['entry'], "sl": pa_setup['sl'], "target": pa_setup['target']}
                         send_telegram_msg(
-                            f"🏛️ *[TYPE 4: INSTITUTIONAL PRICE ACTION]*\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 Stock: `{sym}`\n"
-                            f"⚡ Strategy: *{pa_setup['model']}*\n"
-                            f"🎯 Setup: _{pa_setup['setup']}_\n"
-                            f"📥 Signal: BUY @ ₹{pa_setup['entry']}\n"
-                            f"🛑 SL: ₹{pa_setup['sl']} | 🎯 Target: ₹{pa_setup['target']}\n"
-                            f"⚖️ Risk: ₹{pa_setup['risk']} | R:R: {pa_setup['rr']}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━"
+                            "🏛️ *[TYPE 4: INSTITUTIONAL PRICE ACTION]*\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n"
+                            "📌 Stock: `" + str(sym) + "`\n"
+                            "⚡ Strategy: *" + str(pa_setup['model']) + "*\n"
+                            "🎯 Setup: _" + str(pa_setup['setup']) + "_\n"
+                            "📥 Signal: BUY @ ₹" + str(pa_setup['entry']) + "\n"
+                            "🛑 SL: ₹" + str(pa_setup['sl']) + " | 🎯 Target: ₹" + str(pa_setup['target']) + "\n"
+                            "⚖️ Risk: ₹" + str(pa_setup['risk']) + " | R:R: " + str(pa_setup['rr']) + "\n"
+                            "━━━━━━━━━━━━━━━━━━━━"
                         )
 
             time.sleep(60)
