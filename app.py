@@ -21,17 +21,15 @@ ai_model_fvg = None
 if os.path.exists("fvg_ai_model.pkl"):
     try:
         ai_model_fvg = joblib.load("fvg_ai_model.pkl")
-        print("Type 1: FVG AI Model Loaded")
-    except Exception as e:
-        print(f"FVG Model Load Error: {e}")
+    except:
+        pass
 
 ai_model_pa = None
 if os.path.exists("price_action_ai_model.pkl"):
     try:
         ai_model_pa = joblib.load("price_action_ai_model.pkl")
-        print("Type 5: 15 EMA Price Action AI Model Loaded")
-    except Exception as e:
-        print(f"PA Model Load Error: {e}")
+    except:
+        pass
 
 NSE_STOCKS = [
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "SBIN",
@@ -39,7 +37,7 @@ NSE_STOCKS = [
 ]
 CRYPTO_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-# 5 స్ట్రాటజీల ట్రాకింగ్ స్టేట్
+# 5 విభిన్న స్ట్రాటజీలు
 STRATEGIES = ["AI", "QUANT", "HYBRID", "PRICE_ACTION", "PA_15EMA_AI"]
 SENT_ALERTS = {s: set() for s in STRATEGIES}
 ACTIVE_TRADES = {s: {} for s in STRATEGIES}
@@ -57,7 +55,7 @@ def send_telegram_msg(msg_text):
     except:
         return False
 
-# 1. Binance Zero-Delay 5m క్యాండిల్స్ (24/7 క్రిప్టో)
+# 1. Binance Zero-Delay లైవ్ క్యాండిల్స్ (24/7 క్రిప్టో)
 def fetch_binance_live(symbol="BTCUSDT", limit=60):
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit={limit}"
@@ -74,7 +72,7 @@ def fetch_binance_live(symbol="BTCUSDT", limit=60):
         pass
     return None
 
-# 2. TradingView Direct Public API (ఎన్‌ఎస్‌ఈ జీరో-డిలే లైవ్ ఫీడ్)
+# 2. TradingView Direct Public API (NSE Zero-Delay)
 def fetch_tradingview_nse_live(symbol):
     try:
         url = "https://scanner.tradingview.com/india/scan"
@@ -125,7 +123,7 @@ def evaluate_price_action_setup(live_data):
         if risk > 0:
             return {
                 "model": "Breakout and Retest",
-                "setup": "Support Retest above VWAP and 20 SMA",
+                "setup": "Support Retest above VWAP",
                 "entry": p, "sl": sl, "target": round(p + (risk * 2), 2), "risk": risk, "rr": "1:2.0"
             }
 
@@ -135,10 +133,9 @@ def evaluate_price_action_setup(live_data):
         if risk > 0:
             return {
                 "model": "Wyckoff Theory",
-                "setup": "Accumulation Spring to Markup Expansion",
+                "setup": "Accumulation Spring Expansion",
                 "entry": p, "sl": sl, "target": round(p + (risk * 2), 2), "risk": risk, "rr": "1:2.0"
             }
-
     return None
 
 def background_scanner_and_audit():
@@ -155,33 +152,34 @@ def background_scanner_and_audit():
                 AUDIT_LOGS = {s: [] for s in STRATEGIES}
                 AUDIT_SENT_TODAY = False
 
+            # సాయంత్రం 03:30 PM ఆడిట్ రిపోర్టులు
             if now.hour >= 15 and now.minute >= 30 and not AUDIT_SENT_TODAY:
                 for strat in STRATEGIES:
                     for sym, pos in list(ACTIVE_TRADES[strat].items()):
-                        AUDIT_LOGS[strat].append(f"CLOSED AT 03:30 PM | {sym} | Exit: {pos['entry']}")
+                        AUDIT_LOGS[strat].append(f"CLOSED @ 03:30 PM | {sym} | Entry: {pos['entry']}")
                     ACTIVE_TRADES[strat].clear()
 
                 titles = {
-                    "AI": "*[AUDIT 1: PURE 365-DAY AI MODEL REPORT]*",
-                    "QUANT": "*[AUDIT 2: FAST QUANT INDICATORS REPORT]*",
-                    "HYBRID": "*[AUDIT 3: HYBRID CONFLUENCE REPORT]*",
-                    "PRICE_ACTION": "*[AUDIT 4: INSTITUTIONAL PRICE ACTION REPORT]*",
-                    "PA_15EMA_AI": "*[AUDIT 5: 15 EMA PRICE ACTION AI (24/7) REPORT]*"
+                    "AI": "AUDIT 1: PURE 365-DAY AI MODEL",
+                    "QUANT": "AUDIT 2: FAST QUANT INDICATORS",
+                    "HYBRID": "AUDIT 3: HYBRID CONFLUENCE",
+                    "PRICE_ACTION": "AUDIT 4: INSTITUTIONAL PRICE ACTION",
+                    "PA_15EMA_AI": "AUDIT 5: 15 EMA PRICE ACTION AI (24/7)"
                 }
 
                 for strat in STRATEGIES:
-                    logs_text = "\n".join(AUDIT_LOGS[strat][-5:]) if AUDIT_LOGS[strat] else "No Trades Today"
+                    logs_txt = "\n".join(AUDIT_LOGS[strat][-5:]) if AUDIT_LOGS[strat] else "No Trades Today"
                     msg = (
-                        f"📊 {titles[strat]}\n"
+                        f"📊 *[{titles[strat]}]*\n"
                         f"────────────────────\n"
-                        f"⏱️ *Audit Logs:*\n{logs_text}"
+                        f"⏱️ *Audit Logs:*\n{logs_txt}"
                     )
                     send_telegram_msg(msg)
                     time.sleep(1)
 
                 AUDIT_SENT_TODAY = True
 
-            # 24/7 క్రిప్టో లైవ్ స్కాన్
+            # 1. 24/7 క్రిప్టో లైవ్ స్కాన్ (Binance Zero-Delay)
             for pair in CRYPTO_PAIRS:
                 df = fetch_binance_live(pair)
                 if df is not None and len(df) >= 30:
@@ -217,7 +215,7 @@ def background_scanner_and_audit():
                         sl = round(curr_p * 0.992, 2)
                         tgt = round(curr_p * 1.015, 2)
                         ACTIVE_TRADES["PA_15EMA_AI"][pair] = {"entry": curr_p, "sl": sl, "target": tgt}
-                        send_telegram_msg(
+                        alert_msg = (
                             f"🤖 *[TYPE 5: 15 EMA + PRICE ACTION AI]*\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n"
                             f"📌 Coin: `{pair}` (24/7 Binance Live)\n"
@@ -226,11 +224,11 @@ def background_scanner_and_audit():
                             f"📥 Live Entry: ${curr_p}\n"
                             f"🛑 SL: ${sl} \vert{} 🎯 Target: ${tgt}\n"
                             f"🛡️ S1: ${s1} \vert{} 🚧 R1: ${r1}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"⚡ _Zero-Lag Binance API Active_"
+                            f"━━━━━━━━━━━━━━━━━━━━"
                         )
+                        send_telegram_msg(alert_msg)
 
-            # ఎన్‌ఎస్‌ఈ స్టాక్స్ లైవ్ స్కాన్
+            # 2. ఎన్‌ఎస్‌ఈ స్టాక్స్ లైవ్ స్కాన్ (మార్కెట్ వేళల్లోనే)
             if is_nse_market_open():
                 for sym in NSE_STOCKS:
                     data = fetch_tradingview_nse_live(sym)
@@ -255,6 +253,7 @@ def background_scanner_and_audit():
                         except:
                             pass
 
+                    # Type 1
                     if ai_fvg_score >= 60 and price >= vwap and sym not in SENT_ALERTS["AI"]:
                         SENT_ALERTS["AI"].add(sym)
                         sl = round(price * 0.993, 2)
@@ -271,6 +270,7 @@ def background_scanner_and_audit():
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
 
+                    # Type 2
                     quant_pass = (ema_5 > ema_13) and (price > vwap) and (45 <= rsi <= 65)
                     if quant_pass and sym not in SENT_ALERTS["QUANT"]:
                         SENT_ALERTS["QUANT"].add(sym)
@@ -287,6 +287,7 @@ def background_scanner_and_audit():
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
 
+                    # Type 3
                     if ai_fvg_score >= 60 and quant_pass and sym not in SENT_ALERTS["HYBRID"]:
                         SENT_ALERTS["HYBRID"].add(sym)
                         sl = round(price * 0.993, 2)
@@ -302,6 +303,7 @@ def background_scanner_and_audit():
                             f"━━━━━━━━━━━━━━━━━━━━"
                         )
 
+                    # Type 4
                     pa_setup = evaluate_price_action_setup(data)
                     if pa_setup and sym not in SENT_ALERTS["PRICE_ACTION"]:
                         SENT_ALERTS["PRICE_ACTION"].add(sym)
