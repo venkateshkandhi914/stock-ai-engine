@@ -106,11 +106,9 @@ def fetch_tradingview_nse_live(symbol):
 
 def is_nse_market_open():
     ist_now = datetime.now(pytz.timezone("Asia/Kolkata"))
-    # శని, ఆదివారాలు మార్కెట్ సెలవు
     if ist_now.weekday() in [5, 6]:
         return False
     cur_mins = ist_now.hour * 60 + ist_now.minute
-    # 09:15 AM (555) నుండి 03:30 PM (930) వరకు మాత్రమే
     return 555 <= cur_mins <= 930
 
 # Type 4: Wyckoff & SMC Institutional Price Action కాలిక్యులేషన్
@@ -266,7 +264,6 @@ def background_scanner_and_audit():
                     ai_fvg_score = 50
                     if ai_model_fvg is not None:
                         try:
-                            # లైవ్ ఫీచర్లు
                             f_arr = np.array([[0.5, ((price - vwap)/vwap)*100, 1.2, rsi, 1.5]])
                             ai_fvg_score = int(ai_model_fvg.predict_proba(f_arr)[0][1] * 100)
                         except:
