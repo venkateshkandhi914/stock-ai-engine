@@ -38,7 +38,7 @@ NSE_STOCKS = [
     "TATAMOTORS", "BAJFINANCE", "ITC", "LT", "AXISBANK", "KOTAKBANK"
 ]
 
-# మొత్తం 6 ప్రత్యేక స్ట్రాటజీలు (5 NSE స్టాక్స్ + 1 క్రిప్టో 24/7)
+# మొత్తం 6 ప్రత్యేక స్ట్రాటజీలు
 STRATEGIES = [
     "STOCK_TYPE1_AI",
     "STOCK_TYPE2_QUANT",
@@ -48,7 +48,7 @@ STRATEGIES = [
     "CRYPTO_TYPE5_15EMA_AI"
 ]
 
-SENT_ALERTS = {s: set() for s in STRATEGIES}
+ALERT_TIMESTAMPS = {}
 ACTIVE_TRADES = {s: {} for s in STRATEGIES}
 AUDIT_LOGS = {s: [] for s in STRATEGIES}
 AUDIT_SENT_TODAY = False
@@ -59,12 +59,12 @@ def send_telegram_msg(msg_text):
     url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg_text, "parse_mode": "Markdown"}
     try:
-        resp = requests.post(url, json=payload, timeout=8.0)
+        resp = requests.post(url, json=payload, timeout=6.0)
         return resp.status_code == 200
     except:
         return False
 
-# 1. Binance Market-Wide Scanner: టాప్ మూమెంటమ్ కాయిన్స్ (BTC, ETH, SOL ప్రయారిటీ + స్టేబుల్‌కాయిన్ ఫిల్టర్)
+# 1. Binance Market-Wide Scanner (BTC, ETH, SOL ప్రయారిటీ + స్టేబుల్‌కాయిన్ ఫిల్టర్)
 def get_top_momentum_crypto(limit=15):
     priority_coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
     blacklist = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "EURUSDT", "AEURUSDT"]
@@ -84,7 +84,6 @@ def get_top_momentum_crypto(limit=15):
             valid.sort(key=lambda x: x['volume'], reverse=True)
             top_coins = [x['symbol'] for x in valid[:limit]]
             
-            # మేజర్ కాయిన్స్ లిస్ట్‌లో ముందు ఉండేలా చూసుకోవడం
             for pc in reversed(priority_coins):
                 if pc in top_coins:
                     top_coins.remove(pc)
@@ -180,7 +179,7 @@ def evaluate_price_action_setup(live_data):
     return None
 
 def background_scanner_and_audit():
-    global SENT_ALERTS, AUDIT_SENT_TODAY, ACTIVE_TRADES, AUDIT_LOGS
+    global ALERT_TIMESTAMPS, AUDIT_SENT_TODAY, ACTIVE_TRADES, AUDIT_LOGS
     ist = pytz.timezone("Asia/Kolkata")
 
     while True:
@@ -189,7 +188,7 @@ def background_scanner_and_audit():
 
             # ప్రతిరోజు ఉదయం 9:15 కి డేటా రీసెట్
             if now.hour == 9 and now.minute < 15:
-                SENT_ALERTS = {s: set() for s in STRATEGIES}
+                ALERT_TIMESTAMPS.clear()
                 ACTIVE_TRADES = {s: {} for s in STRATEGIES}
                 AUDIT_LOGS = {s: [] for s in STRATEGIES}
                 AUDIT_SENT_TODAY = False
@@ -223,6 +222,7 @@ def background_scanner_and_audit():
             # 1. 24/7 క్రిప్టో లైవ్ స్కాన్ (టాప్ ఆల్ట్‌కాయిన్స్ + BTC, ETH, SOL)
             # ----------------------------------------------------
             crypto_list = get_top_momentum_crypto(limit=15)
+            curr_epoch = time.time()
             for pair in crypto_list:
                 df = fetch_binance_live(pair, limit=35)
                 if df is not None and len(df) >= 20:
@@ -253,25 +253,27 @@ def background_scanner_and_audit():
                         except:
                             pass
 
-                    # Report 6 క్రిప్టో సిగ్నల్ (15 EMA బౌన్స్ + AI కన్ఫర్మేషన్)
-                    if (pa_score >= 60 and curr_p >= ema_15) and pair not in SENT_ALERTS["CRYPTO_TYPE5_15EMA_AI"]:
-                        SENT_ALERTS["CRYPTO_TYPE5_15EMA_AI"].add(pair)
-                        sl = round(curr_p * 0.992, 4)
-                        tgt = round(curr_p * 1.018, 4)
-                        ACTIVE_TRADES["CRYPTO_TYPE5_15EMA_AI"][pair] = {"entry": curr_p, "sl": sl, "target": tgt}
-                        alert_msg = (
-                            "🤖 *[REPORT 6: 24/7 CRYPTO 15 EMA + AI]*\n"
-                            "━━━━━━━━━━━━━━━━━━━━\n"
-                            "📌 Coin: `" + str(pair) + "`\n"
-                            "🎯 AI Confidence: `" + str(pa_score) + "%`\n"
-                            "📈 15 EMA: $" + str(ema_15) + "\n"
-                            "📥 Live Entry: $" + str(curr_p) + "\n"
-                            "🛑 SL: $" + str(sl) + " \vert{} 🎯 Target: $" + str(tgt) + "\n"
-                            "🛡️ S1: $" + str(s1) + " \vert{} 🚧 R1: $" + str(r1) + "\n"
-                            "━━━━━━━━━━━━━━━━━━━━\n"
-                            "⚡ _Zero-Lag Binance API Active_"
-                        )
-                        send_telegram_msg(alert_msg)
+                    # Report 6 క్రిప్టో సిగ్నల్ (15 EMA బౌన్స్ + AI కన్ఫర్మేషన్ + 30 నిమిషాల కూల్‌డౌన్)
+                    if (pa_score >= 60 and curr_p >= ema_15):
+                        last_alert_time = ALERT_TIMESTAMPS.get("CRYPTO_" + pair, 0)
+                        if curr_epoch - last_alert_time > 1800:
+                            ALERT_TIMESTAMPS["CRYPTO_" + pair] = curr_epoch
+                            sl = round(curr_p * 0.992, 4)
+                            tgt = round(curr_p * 1.018, 4)
+                            ACTIVE_TRADES["CRYPTO_TYPE5_15EMA_AI"][pair] = {"entry": curr_p, "sl": sl, "target": tgt}
+                            alert_msg = (
+                                "🤖 *[REPORT 6: 24/7 CRYPTO 15 EMA + AI]*\n"
+                                "━━━━━━━━━━━━━━━━━━━━\n"
+                                "📌 Coin: `" + str(pair) + "`\n"
+                                "🎯 AI Confidence: `" + str(pa_score) + "%`\n"
+                                "📈 15 EMA: $" + str(ema_15) + "\n"
+                                "📥 Live Entry: $" + str(curr_p) + "\n"
+                                "🛑 SL: $" + str(sl) + " \vert{} 🎯 Target: $" + str(tgt) + "\n"
+                                "🛡️ S1: $" + str(s1) + " \vert{} 🚧 R1: $" + str(r1) + "\n"
+                                "━━━━━━━━━━━━━━━━━━━━\n"
+                                "⚡ _Zero-Lag Binance API Active_"
+                            )
+                            send_telegram_msg(alert_msg)
 
             # ----------------------------------------------------
             # 2. NSE స్టాక్స్ లైవ్ స్కాన్ (మార్కెట్ వేళల్లోనే)
@@ -302,87 +304,97 @@ def background_scanner_and_audit():
                             pass
 
                     # 1. TYPE 1: Pure AI
-                    if ai_fvg_score >= 60 and price >= vwap and sym not in SENT_ALERTS["STOCK_TYPE1_AI"]:
-                        SENT_ALERTS["STOCK_TYPE1_AI"].add(sym)
-                        sl = round(price * 0.993, 2)
-                        tgt = round(price * 1.012, 2)
-                        ACTIVE_TRADES["STOCK_TYPE1_AI"][sym] = {"entry": price, "sl": sl, "target": tgt}
-                        send_telegram_msg(
-                            "🟢 *[REPORT 1: NSE PURE AI BUY ALERT]*\n"
-                            "━━━━━━━━━━━━━━━━━━━━\n"
-                            "📌 Stock: `" + str(sym) + "`\n"
-                            "🎯 AI Confidence: `" + str(ai_fvg_score) + "%`\n"
-                            "📥 CMP: ₹" + str(price) + "\n"
-                            "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
-                            "🛡️ S1: ₹" + str(s1) + " | 🚧 R1: ₹" + str(r1) + "\n"
-                            "━━━━━━━━━━━━━━━━━━━━"
-                        )
+                    if ai_fvg_score >= 60 and price >= vwap:
+                        last_t = ALERT_TIMESTAMPS.get("STK_T1_" + sym, 0)
+                        if curr_epoch - last_t > 1800:
+                            ALERT_TIMESTAMPS["STK_T1_" + sym] = curr_epoch
+                            sl = round(price * 0.993, 2)
+                            tgt = round(price * 1.012, 2)
+                            ACTIVE_TRADES["STOCK_TYPE1_AI"][sym] = {"entry": price, "sl": sl, "target": tgt}
+                            send_telegram_msg(
+                                "🟢 *[REPORT 1: NSE PURE AI BUY ALERT]*\n"
+                                "━━━━━━━━━━━━━━━━━━━━\n"
+                                "📌 Stock: `" + str(sym) + "`\n"
+                                "🎯 AI Confidence: `" + str(ai_fvg_score) + "%`\n"
+                                "📥 CMP: ₹" + str(price) + "\n"
+                                "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
+                                "🛡️ S1: ₹" + str(s1) + " | 🚧 R1: ₹" + str(r1) + "\n"
+                                "━━━━━━━━━━━━━━━━━━━━"
+                            )
 
                     # 2. TYPE 2: Quant Indicators
                     quant_pass = (ema_5 > ema_13) and (price > vwap) and (45 <= rsi <= 65)
-                    if quant_pass and sym not in SENT_ALERTS["STOCK_TYPE2_QUANT"]:
-                        SENT_ALERTS["STOCK_TYPE2_QUANT"].add(sym)
-                        sl = round(price * 0.993, 2)
-                        tgt = round(price * 1.012, 2)
-                        ACTIVE_TRADES["STOCK_TYPE2_QUANT"][sym] = {"entry": price, "sl": sl, "target": tgt}
-                        send_telegram_msg(
-                            "⚡ *[REPORT 2: NSE QUANT INDICATORS ALERT]*\n"
-                            "━━━━━━━━━━━━━━━━━━━━\n"
-                            "📌 Stock: `" + str(sym) + "`\n"
-                            "📊 RSI: " + str(rsi) + " | VWAP: ₹" + str(vwap) + "\n"
-                            "📥 CMP: ₹" + str(price) + "\n"
-                            "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
-                            "━━━━━━━━━━━━━━━━━━━━"
-                        )
+                    if quant_pass:
+                        last_t = ALERT_TIMESTAMPS.get("STK_T2_" + sym, 0)
+                        if curr_epoch - last_t > 1800:
+                            ALERT_TIMESTAMPS["STK_T2_" + sym] = curr_epoch
+                            sl = round(price * 0.993, 2)
+                            tgt = round(price * 1.012, 2)
+                            ACTIVE_TRADES["STOCK_TYPE2_QUANT"][sym] = {"entry": price, "sl": sl, "target": tgt}
+                            send_telegram_msg(
+                                "⚡ *[REPORT 2: NSE QUANT INDICATORS ALERT]*\n"
+                                "━━━━━━━━━━━━━━━━━━━━\n"
+                                "📌 Stock: `" + str(sym) + "`\n"
+                                "📊 RSI: " + str(rsi) + " | VWAP: ₹" + str(vwap) + "\n"
+                                "📥 CMP: ₹" + str(price) + "\n"
+                                "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
+                                "━━━━━━━━━━━━━━━━━━━━"
+                            )
 
                     # 3. TYPE 3: Hybrid Confluence
-                    if ai_fvg_score >= 60 and quant_pass and sym not in SENT_ALERTS["STOCK_TYPE3_HYBRID"]:
-                        SENT_ALERTS["STOCK_TYPE3_HYBRID"].add(sym)
-                        sl = round(price * 0.993, 2)
-                        tgt = round(price * 1.015, 2)
-                        ACTIVE_TRADES["STOCK_TYPE3_HYBRID"][sym] = {"entry": price, "sl": sl, "target": tgt}
-                        send_telegram_msg(
-                            "🚀 *[REPORT 3: NSE HYBRID CONFLUENCE]*\n"
-                            "━━━━━━━━━━━━━━━━━━━━\n"
-                            "📌 Stock: `" + str(sym) + "` (AI + Quant Confirmed)\n"
-                            "🎯 AI Score: " + str(ai_fvg_score) + "% | RSI: " + str(rsi) + "\n"
-                            "📥 CMP: ₹" + str(price) + "\n"
-                            "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
-                            "━━━━━━━━━━━━━━━━━━━━"
-                        )
+                    if ai_fvg_score >= 60 and quant_pass:
+                        last_t = ALERT_TIMESTAMPS.get("STK_T3_" + sym, 0)
+                        if curr_epoch - last_t > 1800:
+                            ALERT_TIMESTAMPS["STK_T3_" + sym] = curr_epoch
+                            sl = round(price * 0.993, 2)
+                            tgt = round(price * 1.015, 2)
+                            ACTIVE_TRADES["STOCK_TYPE3_HYBRID"][sym] = {"entry": price, "sl": sl, "target": tgt}
+                            send_telegram_msg(
+                                "🚀 *[REPORT 3: NSE HYBRID CONFLUENCE]*\n"
+                                "━━━━━━━━━━━━━━━━━━━━\n"
+                                "📌 Stock: `" + str(sym) + "` (AI + Quant Confirmed)\n"
+                                "🎯 AI Score: " + str(ai_fvg_score) + "% | RSI: " + str(rsi) + "\n"
+                                "📥 CMP: ₹" + str(price) + "\n"
+                                "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
+                                "━━━━━━━━━━━━━━━━━━━━"
+                            )
 
                     # 4. TYPE 4: Master Price Action (Wyckoff / SMC)
                     pa_setup = evaluate_price_action_setup(data)
-                    if pa_setup and sym not in SENT_ALERTS["STOCK_TYPE4_PRICE_ACTION"]:
-                        SENT_ALERTS["STOCK_TYPE4_PRICE_ACTION"].add(sym)
-                        ACTIVE_TRADES["STOCK_TYPE4_PRICE_ACTION"][sym] = {"entry": pa_setup['entry'], "sl": pa_setup['sl'], "target": pa_setup['target']}
-                        send_telegram_msg(
-                            "🏛️ *[REPORT 4: NSE INSTITUTIONAL PRICE ACTION]*\n"
-                            "━━━━━━━━━━━━━━━━━━━━\n"
-                            "📌 Stock: `" + str(sym) + "`\n"
-                            "⚡ Strategy: *" + str(pa_setup['model']) + "*\n"
-                            "🎯 Setup: _" + str(pa_setup['setup']) + "_\n"
-                            "📥 Signal: BUY @ ₹" + str(pa_setup['entry']) + "\n"
-                            "🛑 SL: ₹" + str(pa_setup['sl']) + " | 🎯 Target: ₹" + str(pa_setup['target']) + "\n"
-                            "⚖️ Risk: ₹" + str(pa_setup['risk']) + " | R:R: " + str(pa_setup['rr']) + "\n"
-                            "━━━━━━━━━━━━━━━━━━━━"
-                        )
+                    if pa_setup:
+                        last_t = ALERT_TIMESTAMPS.get("STK_T4_" + sym, 0)
+                        if curr_epoch - last_t > 1800:
+                            ALERT_TIMESTAMPS["STK_T4_" + sym] = curr_epoch
+                            ACTIVE_TRADES["STOCK_TYPE4_PRICE_ACTION"][sym] = {"entry": pa_setup['entry'], "sl": pa_setup['sl'], "target": pa_setup['target']}
+                            send_telegram_msg(
+                                "🏛️ *[REPORT 4: NSE INSTITUTIONAL PRICE ACTION]*\n"
+                                "━━━━━━━━━━━━━━━━━━━━\n"
+                                "📌 Stock: `" + str(sym) + "`\n"
+                                "⚡ Strategy: *" + str(pa_setup['model']) + "*\n"
+                                "🎯 Setup: _" + str(pa_setup['setup']) + "_\n"
+                                "📥 Signal: BUY @ ₹" + str(pa_setup['entry']) + "\n"
+                                "🛑 SL: ₹" + str(pa_setup['sl']) + " | 🎯 Target: ₹" + str(pa_setup['target']) + "\n"
+                                "⚖️ Risk: ₹" + str(pa_setup['risk']) + " | R:R: " + str(pa_setup['rr']) + "\n"
+                                "━━━━━━━━━━━━━━━━━━━━"
+                            )
 
                     # 5. TYPE 5 (NSE): 15 EMA + Price Action AI
-                    if price >= ema_15 and sym not in SENT_ALERTS["STOCK_TYPE5_15EMA_AI"]:
-                        SENT_ALERTS["STOCK_TYPE5_15EMA_AI"].add(sym)
-                        sl = round(price * 0.992, 2)
-                        tgt = round(price * 1.015, 2)
-                        ACTIVE_TRADES["STOCK_TYPE5_15EMA_AI"][sym] = {"entry": price, "sl": sl, "target": tgt}
-                        send_telegram_msg(
-                            "📈 *[REPORT 5: NSE 15 EMA + PRICE ACTION AI]*\n"
-                            "━━━━━━━━━━━━━━━━━━━━\n"
-                            "📌 Stock: `" + str(sym) + "`\n"
-                            "📈 15 EMA Level: ₹" + str(ema_15) + "\n"
-                            "📥 Entry: ₹" + str(price) + "\n"
-                            "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
-                            "━━━━━━━━━━━━━━━━━━━━"
-                        )
+                    if price >= ema_15:
+                        last_t = ALERT_TIMESTAMPS.get("STK_T5_" + sym, 0)
+                        if curr_epoch - last_t > 1800:
+                            ALERT_TIMESTAMPS["STK_T5_" + sym] = curr_epoch
+                            sl = round(price * 0.992, 2)
+                            tgt = round(price * 1.015, 2)
+                            ACTIVE_TRADES["STOCK_TYPE5_15EMA_AI"][sym] = {"entry": price, "sl": sl, "target": tgt}
+                            send_telegram_msg(
+                                "📈 *[REPORT 5: NSE 15 EMA + PRICE ACTION AI]*\n"
+                                "━━━━━━━━━━━━━━━━━━━━\n"
+                                "📌 Stock: `" + str(sym) + "`\n"
+                                "📈 15 EMA Level: ₹" + str(ema_15) + "\n"
+                                "📥 Entry: ₹" + str(price) + "\n"
+                                "🛑 SL: ₹" + str(sl) + " | 🎯 Target: ₹" + str(tgt) + "\n"
+                                "━━━━━━━━━━━━━━━━━━━━"
+                            )
 
             time.sleep(60)
         except Exception:
@@ -410,8 +422,8 @@ def scan_top():
                 }])
 
     # 2. మార్కెట్ క్లోజ్ అయితే లేదా క్రిప్టో కోసం: బైనాన్స్ హై మూమెంటమ్ కాయిన్స్
-    crypto_list = get_top_momentum_crypto(limit=8)
-    for pair in crypto_list:
+    priority_list = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+    for pair in priority_list:
         df = fetch_binance_live(pair, limit=30)
         if df is not None and len(df) >= 15:
             curr_p = round(float(df['close'].iloc[-1]), 4)
