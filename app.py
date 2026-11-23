@@ -252,7 +252,7 @@ def fetch_nse_candles_and_live(symbol):
     except:
         pass
 
-    # 2. Yahoo Finance 5m క్యాండిల్స్ (SMC Liquidity Sweep చెక్ కోసం)
+    # 2. Yahoo Finance Direct JSON 5m క్యాండిల్స్ (SMC Liquidity Sweep చెక్ కోసం)
     df_candles = None
     try:
         yf_url = "https://query1.finance.yahoo.com/v8/finance/chart/" + symbol + ".NS?range=2d&interval=5m"
@@ -457,66 +457,93 @@ def background_scanner_and_audit():
 
 threading.Thread(target=background_scanner_and_audit, daemon=True).start()
 
-# యాప్ SCAN బటన్ ఎండ్‌పాయింట్
+# =====================================
+# యాప్ SCAN బటన్ ఎండ్‌పాయింట్ (WITH LIQUIDITY)
+# =====================================
 @application.route('/scan_top', methods=['GET'])
 def scan_top():
     ist_now = datetime.now(pytz.timezone("Asia/Kolkata"))
     today_str = ist_now.strftime("%d-%b %I:%M %p")
 
-    # 1. మార్కెట్ ఓపెన్ ఉంటే ముందుగా NSE స్టాక్స్ స్కాన్
+    # 1. మార్కెట్ ఓపెన్ ఉంటే ముందుగా NSE స్టాక్స్ + SMC Liquidity స్కాన్
     if is_nse_market_open():
         for s in NSE_STOCKS:
-            stk, _ = fetch_nse_candles_and_live(s)
+            stk, df_stk = fetch_nse_candles_and_live(s)
             if stk and stk['close'] >= stk['ema_15']:
-                msg = "🔍 *[APP SCAN: NSE STOCK]*\nStock: `" + s + "` @ ₹" + str(stk['close']) + "\n15 EMA: ₹" + str(stk['ema_15'])
+                liq_txt = "Liquidity: Scanning..."
+                if df_stk is not None and len(df_stk) >= 30:
+                    bsl = round(float(df_stk['High'].tail(30).max()), 2)
+                    ssl = round(float(df_stk['Low'].tail(30).min()), 2)
+                    liq_txt = "BSL: ₹" + str(bsl) + " | SSL: ₹" + str(ssl)
+                    
+                    smc_hit = analyze_smc_liquidity(df_stk, lookback=60)
+                    if smc_hit:
+                        liq_txt = "SMC " + smc_hit['signal'] + " @ ₹" + str(smc_hit['liquidity'])
+
+                msg = (
+                    "🔍 *[APP SCAN: NSE + SMC LIQUIDITY]*\n"
+                    "📌 Stock: `" + s + "` @ ₹" + str(stk['close']) + "\n"
+                    "📈 15 EMA: ₹" + str(stk['ema_15']) + "\n"
+                    "💧 " + liq_txt
+                )
                 send_telegram_msg(msg)
                 return jsonify([{
                     "date": today_str,
                     "pred": s + " (NSE BULLISH 🟢)",
                     "actual": "CMP: ₹" + str(stk['close']) + " | 15 EMA: ₹" + str(stk['ema_15']),
-                    "accuracy": "RSI: " + str(stk['rsi']) + " | Sent to Telegram"
+                    "accuracy": liq_txt
                 }])
 
-    # 2. 24/7 క్రిప్టో లైవ్ స్కాన్ (BTC, ETH, SOL, BNB)
+    # 2. 24/7 క్రిప్టో లైవ్ స్కాన్ + SMC Liquidity Levels (BSL / SSL)
     best_coin = None
     for pair in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]:
-        df = fetch_binance_candles(pair, limit=25)
-        if df is not None and len(df) >= 15:
+        df = fetch_binance_candles(pair, limit=85)
+        if df is not None and len(df) >= 30:
             curr_p = round(float(df['Close'].iloc[-1]), 2)
             ema_15 = round(float(df['Close'].ewm(span=15, adjust=False).mean().iloc[-1]), 2)
             is_bull = curr_p >= ema_15
-            
-            # ఏదైనా కాయిన్ బుల్లిష్ ఉంటే దాన్నే సెలెక్ట్ చేస్తుంది, లేదంటే BTC డేటా ఇస్తుంది
-            if is_bull or best_coin is None:
+
+            # BSL (పై లిక్విడిటీ) & SSL (కింది లిక్విడిటీ) లెక్కించడం
+            bsl = round(float(df['High'].tail(40).max()), 2)
+            ssl = round(float(df['Low'].tail(40).min()), 2)
+            liq_status = "BSL: $" + str(bsl) + " | SSL: $" + str(ssl)
+
+            # SMC Sweep జరిగిందో లేదో చెక్ చేయడం
+            smc_res = analyze_smc_liquidity(df, lookback=80)
+            if smc_res:
+                liq_status = "🚨 SMC " + smc_res['signal'] + " SWEEP @ $" + str(smc_res['liquidity'])
+
+            if is_bull or smc_res or best_coin is None:
                 best_coin = {
                     "pair": pair,
                     "price": curr_p,
                     "ema": ema_15,
-                    "trend": "BULLISH 🟢" if is_bull else "CONSOLIDATION ⚪"
+                    "trend": "SMC " + smc_res['signal'] + " 🚨" if smc_res else ("BULLISH 🟢" if is_bull else "CONSOLIDATION ⚪"),
+                    "liq": liq_status
                 }
-                if is_bull:
+                if is_bull or smc_res:
                     break
 
     if best_coin:
         send_telegram_msg(
-            "🔍 *[APP MANUAL SCAN RESULT]*\n"
+            "🔍 *[APP SCAN: CRYPTO + SMC LIQUIDITY]*\n"
             "📌 Asset: `" + best_coin["pair"] + "`\n"
             "📥 Live Price: $" + str(best_coin["price"]) + "\n"
             "📈 15 EMA: $" + str(best_coin["ema"]) + "\n"
-            "⚡ Trend: " + best_coin["trend"]
+            "💧 " + best_coin["liq"]
         )
         return jsonify([{
             "date": today_str,
             "pred": best_coin["pair"] + " (" + best_coin["trend"] + ")",
             "actual": "CMP: $" + str(best_coin["price"]) + " | 15 EMA: $" + str(best_coin["ema"]),
-            "accuracy": "Zero-Lag Live Feed | Telegram Sent"
+            "accuracy": best_coin["liq"]
         }])
 
     return jsonify([{
         "date": today_str,
         "pred": "BTCUSDT (SCAN COMPLETE)",
-        "actual": "Check Telegram for Live Alerts",
-        "accuracy": "System Active"
+        "actual": "Live Feed Active",
+        "accuracy": "BSL/SSL Liquidity Synced"
     }])
 
 @application.route('/test_telegram', methods=['GET'])
