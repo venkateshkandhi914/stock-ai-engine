@@ -463,37 +463,60 @@ def scan_top():
     ist_now = datetime.now(pytz.timezone("Asia/Kolkata"))
     today_str = ist_now.strftime("%d-%b %I:%M %p")
 
+    # 1. మార్కెట్ ఓపెన్ ఉంటే ముందుగా NSE స్టాక్స్ స్కాన్
     if is_nse_market_open():
-        for s in NSE_STOCKS[:4]:
+        for s in NSE_STOCKS:
             stk, _ = fetch_nse_candles_and_live(s)
             if stk and stk['close'] >= stk['ema_15']:
-                send_telegram_msg("🔍 *[APP SCAN: NSE]* `" + s + "` @ ₹" + str(stk['close']))
+                msg = "🔍 *[APP SCAN: NSE STOCK]*\nStock: `" + s + "` @ ₹" + str(stk['close']) + "\n15 EMA: ₹" + str(stk['ema_15'])
+                send_telegram_msg(msg)
                 return jsonify([{
                     "date": today_str,
-                    "pred": s + " (NSE Bullish 🟢)",
+                    "pred": s + " (NSE BULLISH 🟢)",
                     "actual": "CMP: ₹" + str(stk['close']) + " | 15 EMA: ₹" + str(stk['ema_15']),
-                    "accuracy": "RSI: " + str(stk['rsi'])
+                    "accuracy": "RSI: " + str(stk['rsi']) + " | Sent to Telegram"
                 }])
 
+    # 2. 24/7 క్రిప్టో లైవ్ స్కాన్ (BTC, ETH, SOL, BNB)
+    best_coin = None
     for pair in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]:
-        df = fetch_binance_candles(pair, limit=30)
+        df = fetch_binance_candles(pair, limit=25)
         if df is not None and len(df) >= 15:
             curr_p = round(float(df['Close'].iloc[-1]), 2)
             ema_15 = round(float(df['Close'].ewm(span=15, adjust=False).mean().iloc[-1]), 2)
-            trend = "BULLISH 🟢" if curr_p >= ema_15 else "CONSOLIDATION ⚪"
-            send_telegram_msg("🔍 *[APP SCAN: CRYPTO]* `" + pair + "` @ $" + str(curr_p))
-            return jsonify([{
-                "date": today_str,
-                "pred": pair + " (" + trend + ")",
-                "actual": "CMP: $" + str(curr_p) + " | 15 EMA: $" + str(ema_15),
-                "accuracy": "SMC & 15 EMA Active"
-            }])
+            is_bull = curr_p >= ema_15
+            
+            # ఏదైనా కాయిన్ బుల్లిష్ ఉంటే దాన్నే సెలెక్ట్ చేస్తుంది, లేదంటే BTC డేటా ఇస్తుంది
+            if is_bull or best_coin is None:
+                best_coin = {
+                    "pair": pair,
+                    "price": curr_p,
+                    "ema": ema_15,
+                    "trend": "BULLISH 🟢" if is_bull else "CONSOLIDATION ⚪"
+                }
+                if is_bull:
+                    break
+
+    if best_coin:
+        send_telegram_msg(
+            "🔍 *[APP MANUAL SCAN RESULT]*\n"
+            "📌 Asset: `" + best_coin["pair"] + "`\n"
+            "📥 Live Price: $" + str(best_coin["price"]) + "\n"
+            "📈 15 EMA: $" + str(best_coin["ema"]) + "\n"
+            "⚡ Trend: " + best_coin["trend"]
+        )
+        return jsonify([{
+            "date": today_str,
+            "pred": best_coin["pair"] + " (" + best_coin["trend"] + ")",
+            "actual": "CMP: $" + str(best_coin["price"]) + " | 15 EMA: $" + str(best_coin["ema"]),
+            "accuracy": "Zero-Lag Live Feed | Telegram Sent"
+        }])
 
     return jsonify([{
         "date": today_str,
-        "pred": "BTCUSDT (Live 🟢)",
-        "actual": "Feed Active",
-        "accuracy": "SMC Engine Ready"
+        "pred": "BTCUSDT (SCAN COMPLETE)",
+        "actual": "Check Telegram for Live Alerts",
+        "accuracy": "System Active"
     }])
 
 @application.route('/test_telegram', methods=['GET'])
